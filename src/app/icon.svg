@@ -1,0 +1,8 @@
+<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Top Face (The Lab) -->
+  <path d="M24 10 L40 18 L24 26 L8 18 Z" fill="#A78BFA" opacity="0.9"/>
+  <!-- Left Face (The Foundation) -->
+  <path d="M8 18 V34 L24 42 V26 Z" fill="#6D28D9"/>
+  <!-- Right Face (The Cypher / Transparency) -->
+  <path d="M40 18 V34 L24 42 V26 Z" fill="#ffffff" opacity="0.2"/>
+</svg>
