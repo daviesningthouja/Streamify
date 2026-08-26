@@ -16,13 +16,14 @@ import type { TorrentStatus } from "@/types/torrent";
 import VideoPlayer from "@/components/VideoPlayer";
 
 export default function WatchParty() {
+  // const peerRef = useRef<Peer | null>(null);
+  // const connectionRef = useRef<DataConnection | null>(null);
+
   const peerManagerRef = useRef<PeerManager | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [magnetURI, setMagnetURI] = useState("");
-  
-  // Replaces isConnected with the rich status string
   const [connectionStatus, setConnectionStatus] = useState<
     "connecting" | "connected" | "disconnected" | "reconnecting" | "error"
   >("connecting");
@@ -37,39 +38,50 @@ export default function WatchParty() {
   const [peerId, setPeerId] = useState("");
   const [roomId, setRoomId] = useState("");
 
+  // Reactive connection status
+  const [isConnected, setIsConnected] = useState(false);
+
   async function handleGuestTorrent(magnetURI: string) {
     console.log("Starting torrent download...");
+
     setTorrentStatus("downloading");
 
     await downloadTorrent(
       magnetURI,
+
       async (file) => {
         console.log("Torrent file ready:", file.name);
+
         console.log("File size:", file.length);
 
         try {
           const blob = await file.blob();
+
           const url = URL.createObjectURL(blob);
 
           setVideoSrc(url);
+
           setTorrentStatus("ready");
 
           console.log("Guest video URL created:", url);
         } catch (error) {
           console.error("Failed to create video URL:", error);
+
           setTorrentStatus("error");
         }
       },
+
       (progress) => {
         console.log("Download progress:", Math.round(progress * 100), "%");
       },
+
       (error) => {
         console.error("Torrent download error:", error);
+
         setTorrentStatus("error");
-      }
+      },
     );
   }
-
   /*
    * Handle incoming PeerJS data
    */
@@ -85,7 +97,9 @@ export default function WatchParty() {
       };
 
       console.log("Received magnet:", magnet.magnetURI);
+
       handleGuestTorrent(magnet.magnetURI);
+
       return;
     }
     switch (incoming.type) {
@@ -95,7 +109,9 @@ export default function WatchParty() {
 
       case "CHAT": {
         const chatMessage = incoming.payload;
+
         setMessages((previous) => [...previous, chatMessage]);
+
         break;
       }
 
@@ -111,20 +127,24 @@ export default function WatchParty() {
     const manager = new PeerManager({
       onPeerOpen: (id) => {
         console.log("My Peer ID:", id);
+
         setPeerId(id);
-        // We are connected to the signaling server, but no peers are connected yet
-        setConnectionStatus("disconnected");
+
+        setConnectionStatus("connected");
       },
 
       onConnection: (connection) => {
         console.log("Incoming connection:", connection.peer);
-        // If someone connects to us, we are the host.
+
+        // If someone connects to us,
+        // we are the host.
         setRole("host");
       },
 
       onConnectionOpen: (connection) => {
         console.log("Connection established:", connection.peer);
-        setConnectionStatus("connected");
+
+        setIsConnected(true);
 
         connection.send({
           type: "CONNECTED",
@@ -140,33 +160,40 @@ export default function WatchParty() {
 
       onConnectionClose: (peerId) => {
         console.log("Peer disconnected:", peerId);
-        setConnectionStatus(
-          manager.getConnectionCount() > 0 ? "connected" : "disconnected"
-        );
+
+        setIsConnected(manager.getConnectionCount() > 0);
       },
 
       onConnectionError: (peerId, error) => {
         console.error(`Connection error with ${peerId}:`, error);
-        setConnectionStatus("error");
+
+        setIsConnected(false);
       },
 
       onPeerError: (error) => {
         console.error("PeerJS error:", error);
-        setConnectionStatus("error");
+
+        setIsConnected(false);
       },
-      
       onPeerReconnecting: () => {
         console.log("PeerJS reconnecting...");
+
         setConnectionStatus("reconnecting");
+
+        setIsConnected(false);
       },
 
       onPeerDisconnected: () => {
         console.warn("PeerJS signaling disconnected.");
+
         setConnectionStatus("disconnected");
+
+        setIsConnected(false);
       },
     });
 
     peerManagerRef.current = manager;
+
     manager.createPeer();
 
     return () => {
@@ -184,6 +211,7 @@ export default function WatchParty() {
 
     if (!manager) {
       console.error("Peer manager is not initialized.");
+
       return;
     }
 
@@ -195,13 +223,14 @@ export default function WatchParty() {
 
     try {
       setRole("guest");
-      setConnectionStatus("connecting");
 
       const connection = manager.connect(hostId);
+
       console.log("Connecting to host:", connection.peer);
     } catch (error) {
       console.error("Failed to connect to host:", error);
-      setConnectionStatus("error");
+
+      setIsConnected(false);
     }
   }
 
@@ -210,6 +239,7 @@ export default function WatchParty() {
    */
   function sendMessage() {
     const text = message.trim();
+
     const manager = peerManagerRef.current;
 
     if (!text || !manager) {
@@ -242,6 +272,7 @@ export default function WatchParty() {
 
     setSelectedFile(file);
     const url = URL.createObjectURL(file);
+
     setVideoSrc(url);
   }
 
@@ -254,12 +285,21 @@ export default function WatchParty() {
 
     seedFile(
       selectedFile,
+
+      // (magnet) => {
+      //   console.log("Magnet URI:", magnet);
+
+      //   setMagnetURI(magnet);
+      //   setTorrentStatus("ready");
+      // },
       (magnet) => {
         console.log("Magnet URI:", magnet);
+
         setMagnetURI(magnet);
         setTorrentStatus("ready");
 
         const manager = peerManagerRef.current;
+
         if (manager) {
           manager.broadcast({
             type: "MAGNET",
@@ -271,10 +311,12 @@ export default function WatchParty() {
           });
         }
       },
+
       (error) => {
         console.error(error);
+
         setTorrentStatus("error");
-      }
+      },
     );
   }
 
@@ -289,12 +331,14 @@ export default function WatchParty() {
           {/* Peer ID */}
           <div>
             <p className="text-sm text-gray-500">Your Peer ID</p>
-            <p className="break-all font-mono">{peerId || "Generating..."}</p>
+
+            <p className="break-all font-mono">{peerId || "Connecting..."}</p>
           </div>
 
           {/* Join room */}
           <div>
             <p className="mb-2 text-sm font-medium">Join Host</p>
+
             <div className="flex gap-2">
               <input
                 value={roomId}
@@ -302,12 +346,10 @@ export default function WatchParty() {
                 placeholder="Enter host Peer ID"
                 className="flex-1 rounded border px-3 py-2"
               />
+
               <button
                 onClick={joinRoom}
-                disabled={
-                  connectionStatus === "connected" ||
-                  connectionStatus === "connecting"
-                }
+                disabled={isConnected}
                 className="rounded bg-black px-4 py-2 text-white disabled:opacity-40"
               >
                 Join
@@ -318,24 +360,25 @@ export default function WatchParty() {
           {/* Connection information */}
           <div className="rounded border p-4">
             <p className="text-sm text-gray-500">Role</p>
+
             <p className="font-semibold capitalize">{role}</p>
 
             <p className="mt-4 text-sm text-gray-500">Connection</p>
+
             <p
-              className={`font-semibold capitalize ${
-                connectionStatus === "connected"
-                  ? "text-green-600"
-                  : connectionStatus === "error"
-                  ? "text-red-600"
-                  : "text-gray-500"
-              }`}
+              className={
+                isConnected
+                  ? "font-semibold text-green-600"
+                  : "font-semibold text-gray-500"
+              }
             >
-              {connectionStatus}
+              {isConnected ? "Connected" : "Not connected"}
             </p>
           </div>
 
           <div className="space-y-3 rounded-xl border p-4">
             <h2 className="font-semibold">Host Media</h2>
+
             <input
               type="file"
               accept=".mp4,.webm,.mkv,video/mp4,video/webm"

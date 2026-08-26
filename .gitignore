@@ -43,3 +43,6 @@ next-env.d.ts
 *req.txt
 
 *.vscode
+
+*.zip
+*version
