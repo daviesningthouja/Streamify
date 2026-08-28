@@ -2,27 +2,41 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// import Peer, { DataConnection } from "peerjs";
-// import { createPeer, connectToPeer } from "@/lib/peer";
-
 import { PeerManager } from "@/lib/peer-manager";
+import { createParticipant } from "@/lib/participant";
+import { RoomSession } from "@/lib/room-session";
 
 import ChatBox from "@/components/ChatBox";
+
 import type { ChatMessage } from "@/types/chat";
+
+import type { Participant, RoomSessionState } from "@/types/room";
 import type { PeerMessage, PeerRole } from "@/types/peer";
+
 import { seedFile, downloadTorrent } from "@/lib/torrent";
+import type { TorrentFile } from "@/lib/torrent";
 
 import type { TorrentStatus } from "@/types/torrent";
+
 import VideoPlayer from "@/components/VideoPlayer";
+import { DataConnection } from "peerjs";
 
 export default function WatchParty() {
   const peerManagerRef = useRef<PeerManager | null>(null);
+  const hostConnectionRef = useRef<DataConnection | null>(null);
+
+  const roomSessionRef = useRef<RoomSession | null>(null);
+
+  const participantRef = useRef<Participant | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [torrentFile, setTorrentFile] = useState<TorrentFile | null>(null);
+
   const [magnetURI, setMagnetURI] = useState("");
-  
-  // Replaces isConnected with the rich status string
+  const activeMagnetRef =
+  useRef<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<
     "connecting" | "connected" | "disconnected" | "reconnecting" | "error"
   >("connecting");
@@ -32,158 +46,421 @@ export default function WatchParty() {
   const [role, setRole] = useState<PeerRole>("host");
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+
   const [message, setMessage] = useState("");
 
   const [peerId, setPeerId] = useState("");
+  const [participantId, setParticipantId] = useState<string | null>(null);
+
   const [roomId, setRoomId] = useState("");
 
-  async function handleGuestTorrent(magnetURI: string) {
-    console.log("Starting torrent download...");
-    setTorrentStatus("downloading");
+  /*
+   * -----------------------------------------
+   * GUEST TORRENT
+   * -----------------------------------------
+   */
+async function handleGuestTorrent(
+  magnetURI: string,
+) {
+  console.log(
+    "Starting torrent download...",
+  );
+  if (
+  activeMagnetRef.current ===
+  magnetURI
+) {
+  console.log(
+    "Torrent already being loaded:",
+    magnetURI,
+  );
 
-    await downloadTorrent(
-      magnetURI,
-      async (file) => {
-        console.log("Torrent file ready:", file.name);
-        console.log("File size:", file.length);
+  return;
+}
 
-        try {
-          const blob = await file.blob();
-          const url = URL.createObjectURL(blob);
+activeMagnetRef.current =
+  magnetURI;
 
-          setVideoSrc(url);
-          setTorrentStatus("ready");
+  setTorrentStatus(
+    "downloading",
+  );
 
-          console.log("Guest video URL created:", url);
-        } catch (error) {
-          console.error("Failed to create video URL:", error);
-          setTorrentStatus("error");
-        }
-      },
-      (progress) => {
-        console.log("Download progress:", Math.round(progress * 100), "%");
-      },
-      (error) => {
-        console.error("Torrent download error:", error);
-        setTorrentStatus("error");
+  setVideoSrc(null);
+  setTorrentFile(null);
+
+  await downloadTorrent(
+    magnetURI,
+
+    (file) => {
+      console.log(
+        "Torrent file ready:",
+        file.name,
+      );
+
+      console.log(
+        "File size:",
+        file.length,
+      );
+
+      /*
+       * Give the actual WebTorrent
+       * File to VideoPlayer.
+       */
+      setTorrentFile(file);
+
+      setTorrentStatus(
+        "ready",
+      );
+    },
+
+    (progress) => {
+      console.log(
+        "Download progress:",
+        Math.round(
+          progress * 100,
+        ),
+        "%",
+      );
+    },
+
+    (error) => {
+      console.error(
+        "Torrent error:",
+        error,
+      );
+
+      setTorrentStatus(
+        "error",
+      );
+    },
+  );
+}
+  /*
+   * -----------------------------------------
+   * ROOM SESSION
+   * -----------------------------------------
+   */
+
+  function applySessionState(session: RoomSessionState) {
+    console.log("Applying room session state:", session);
+
+    /*
+     * Restore participants
+     */
+    console.log("Participants:", session.participants);
+
+    /*
+     * Restore chat history
+     */
+    setMessages(session.chatHistory);
+
+    /*
+     * Restore torrent
+     */
+    if (session.torrent) {
+      console.log("Room already has torrent:", session.torrent);
+
+      setMagnetURI(session.torrent.magnetURI);
+
+      /*
+       * Only guests need to download.
+       */
+      if (role === "guest") {
+        handleGuestTorrent(session.torrent.magnetURI);
       }
-    );
+    }
+
+    /*
+     * Playback state will be used
+     * in the synchronization phase.
+     */
+    console.log("Playback state:", session.playback);
   }
 
   /*
-   * Handle incoming PeerJS data
+   * -----------------------------------------
+   * INCOMING PEER DATA
+   * -----------------------------------------
    */
-  function handleIncomingData(data: unknown) {
+
+  function handleIncomingData(data: unknown, connection: DataConnection) {
     console.log("Received:", data);
 
     const incoming = data as PeerMessage;
-    if (incoming.type === "MAGNET") {
-      const magnet = incoming.payload as {
-        magnetURI: string;
-        fileName: string;
-        fileSize: number;
-      };
 
-      console.log("Received magnet:", magnet.magnetURI);
-      handleGuestTorrent(magnet.magnetURI);
-      return;
-    }
     switch (incoming.type) {
-      case "CONNECTED":
+      case "CONNECTED": {
         console.log("Peer connected:", incoming.payload.message);
-        break;
 
-      case "CHAT": {
-        const chatMessage = incoming.payload;
-        setMessages((previous) => [...previous, chatMessage]);
+        if (participantRef.current?.role === "guest") {
+          connection.send({
+            type: "JOIN_ROOM",
+            payload: {
+              participant: participantRef.current,
+            },
+          });
+
+          console.log("JOIN_ROOM sent to host:", connection.peer);
+        }
+
         break;
       }
 
+      case "JOIN_ROOM": {
+        const participant = incoming.payload.participant;
+
+        console.log("Guest wants to join:", participant);
+
+        const session = roomSessionRef.current;
+
+        const manager = peerManagerRef.current;
+
+        if (!session || !manager) {
+          console.warn("Room session or PeerManager unavailable.");
+
+          break;
+        }
+
+        /*
+         * Add Guest to the room.
+         */
+        session.addParticipant(participant);
+
+        /*
+         * Send the complete current
+         * room state back to the Guest.
+         */
+        // manager.sendTo(participant.peerId, {
+        //   type: "SESSION_STATE",
+        //   payload: session.getState(),
+        // });
+        console.log("Room state before sending:", session.getState());
+        connection.send({
+          type: "SESSION_STATE",
+          payload: session.getState(),
+        });
+
+        console.log("SESSION_STATE sent to:", connection.peer);
+
+        break;
+      }
+
+      case "SESSION_STATE": {
+        console.log("Received SESSION_STATE:", incoming.payload);
+
+        applySessionState(incoming.payload);
+
+        break;
+      }
+
+      case "MAGNET": {
+  const magnet = incoming.payload;
+
+  console.log(
+    "Received magnet:",
+    magnet.magnetURI,
+  );
+
+  /*
+   * Ignore MAGNET if this torrent
+   * is already being initialized
+   * from SESSION_STATE.
+   */
+  if (
+    activeMagnetRef.current ===
+    magnet.magnetURI
+  ) {
+    console.log(
+      "Ignoring duplicate MAGNET:",
+      magnet.magnetURI,
+    );
+
+    break;
+  }
+
+  handleGuestTorrent(
+    magnet.magnetURI,
+  );
+
+  break;
+}
+
+      case "CHAT": {
+        const chatMessage = incoming.payload;
+
+        setMessages((previous) => {
+          const exists = previous.some(
+            (message) => message.id === chatMessage.id,
+          );
+
+          if (exists) {
+            return previous;
+          }
+
+          return [...previous, chatMessage];
+        });
+
+        roomSessionRef.current?.addChatMessage(chatMessage);
+
+        if (participantRef.current?.role === "host") {
+          const manager = peerManagerRef.current;
+
+          if (manager) {
+            for (const guestConnection of manager.getConnections()) {
+              if (guestConnection.peer !== connection.peer) {
+                if (guestConnection.open) {
+                  guestConnection.send({
+                    type: "CHAT",
+                    payload: chatMessage,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        break;
+      }
       default:
         console.warn("Unknown message type:", incoming);
     }
   }
 
   /*
-   * Initialize PeerJS
+   * -----------------------------------------
+   * INITIALIZE PEER
+   * -----------------------------------------
    */
+
   useEffect(() => {
     const manager = new PeerManager({
       onPeerOpen: (id) => {
         console.log("My Peer ID:", id);
+
         setPeerId(id);
-        // We are connected to the signaling server, but no peers are connected yet
+
         setConnectionStatus("disconnected");
+
+        /*
+         * Create our Participant identity
+         * once PeerJS gives us our Peer ID.
+         */
+        const currentRole = participantRef.current?.role ?? role;
+
+        const participant = createParticipant(id, currentRole);
+
+        participantRef.current = participant;
+        setParticipantId(participant.participantId);
+
+        /*
+         * Create the room session only
+         * when we are the Host.
+         */
+        if (currentRole === "host" && !roomSessionRef.current) {
+          roomSessionRef.current = new RoomSession(id, participant);
+
+          setRoomId(id);
+
+          console.log(
+            "Room session created:",
+            roomSessionRef.current.getState(),
+          );
+        }
       },
 
       onConnection: (connection) => {
         console.log("Incoming connection:", connection.peer);
-        // If someone connects to us, we are the host.
+
+        /*
+         * Incoming connections mean
+         * this browser is acting as Host.
+         */
         setRole("host");
       },
 
       onConnectionOpen: (connection) => {
         console.log("Connection established:", connection.peer);
+
         setConnectionStatus("connected");
 
-        connection.send({
-          type: "CONNECTED",
-          payload: {
-            message: "Hello from host",
-          },
-        });
+        if (participantRef.current?.role === "host") {
+          connection.send({
+            type: "CONNECTED",
+            payload: {
+              message: "Hello from host",
+            },
+          });
+        }
+
+        if (participantRef.current?.role === "guest") {
+          hostConnectionRef.current = connection;
+        }
       },
 
-      onData: (data) => {
-        handleIncomingData(data);
+      onData: (data, connection) => {
+        handleIncomingData(data, connection);
       },
 
-      onConnectionClose: (peerId) => {
-        console.log("Peer disconnected:", peerId);
+      onConnectionClose: (remotePeerId) => {
+        console.log("Peer disconnected:", remotePeerId);
+
         setConnectionStatus(
-          manager.getConnectionCount() > 0 ? "connected" : "disconnected"
+          manager.getConnectionCount() > 0 ? "connected" : "disconnected",
         );
       },
 
-      onConnectionError: (peerId, error) => {
-        console.error(`Connection error with ${peerId}:`, error);
+      onConnectionError: (remotePeerId, error) => {
+        console.error(`Connection error with ${remotePeerId}:`, error);
+
         setConnectionStatus("error");
       },
 
       onPeerError: (error) => {
         console.error("PeerJS error:", error);
+
         setConnectionStatus("error");
       },
-      
+
       onPeerReconnecting: () => {
         console.log("PeerJS reconnecting...");
+
         setConnectionStatus("reconnecting");
       },
 
       onPeerDisconnected: () => {
         console.warn("PeerJS signaling disconnected.");
+
         setConnectionStatus("disconnected");
       },
     });
 
     peerManagerRef.current = manager;
+
     manager.createPeer();
 
     return () => {
       manager.destroy();
+
       peerManagerRef.current = null;
+
+      roomSessionRef.current = null;
+
+      participantRef.current = null;
+      setParticipantId(null);
     };
   }, []);
 
   /*
-   * GUEST:
-   * Connect to host.
+   * -----------------------------------------
+   * GUEST JOIN
+   * -----------------------------------------
    */
+
   function joinRoom() {
     const manager = peerManagerRef.current;
 
     if (!manager) {
       console.error("Peer manager is not initialized.");
+
       return;
     }
 
@@ -194,44 +471,122 @@ export default function WatchParty() {
     }
 
     try {
+      /*
+       * This browser becomes a Guest.
+       */
       setRole("guest");
+
       setConnectionStatus("connecting");
 
+      /*
+       * Create/update our Guest identity.
+       */
+      if (peerId) {
+        const participant = createParticipant(peerId, "guest");
+
+        participantRef.current = participant;
+        setParticipantId(participant.participantId);
+      }
+
+      /*
+       * The Host Peer ID is still the
+       * previously established Host ID.
+       *
+       * We are NOT discovering a new
+       * Host Peer ID here.
+       */
       const connection = manager.connect(hostId);
+
       console.log("Connecting to host:", connection.peer);
     } catch (error) {
       console.error("Failed to connect to host:", error);
+
       setConnectionStatus("error");
     }
   }
 
   /*
-   * Send chat message
+   * -----------------------------------------
+   * CHAT
+   * -----------------------------------------
    */
+
   function sendMessage() {
     const text = message.trim();
+
     const manager = peerManagerRef.current;
 
-    if (!text || !manager) {
+    const participant = participantRef.current;
+
+    if (!text || !manager || !participant) {
       return;
     }
 
     const chatMessage: ChatMessage = {
       id: crypto.randomUUID(),
+
       text,
-      sender: role,
+
+      sender: {
+        participantId: participant.participantId,
+
+        displayName: participant.displayName,
+
+        peerId: participant.peerId,
+      },
+
       timestamp: Date.now(),
     };
 
+    /*
+     * Add locally.
+     */
     setMessages((previous) => [...previous, chatMessage]);
 
-    manager.broadcast({
-      type: "CHAT",
-      payload: chatMessage,
-    });
+    /*
+     * Store in room state.
+     */
+    roomSessionRef.current?.addChatMessage(chatMessage);
+
+    /*
+     * Host broadcasts to everyone.
+     *
+     * Guest sends to Host.
+     */
+    if (participant.role === "host") {
+      manager.broadcast({
+        type: "CHAT",
+        payload: chatMessage,
+      });
+    } else {
+      const hostConnection = hostConnectionRef.current;
+
+      if (!hostConnection) {
+        console.warn("No Host connection available.");
+
+        return;
+      }
+
+      if (!hostConnection.open) {
+        console.warn("Host connection is not open.");
+
+        return;
+      }
+
+      hostConnection.send({
+        type: "CHAT",
+        payload: chatMessage,
+      });
+    }
 
     setMessage("");
   }
+
+  /*
+   * -----------------------------------------
+   * FILE SELECTION
+   * -----------------------------------------
+   */
 
   function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -241,9 +596,17 @@ export default function WatchParty() {
     }
 
     setSelectedFile(file);
+
     const url = URL.createObjectURL(file);
+
     setVideoSrc(url);
   }
+
+  /*
+   * -----------------------------------------
+   * HOST SEED
+   * -----------------------------------------
+   */
 
   function handleSeedFile() {
     if (!selectedFile) {
@@ -254,27 +617,59 @@ export default function WatchParty() {
 
     seedFile(
       selectedFile,
+
       (magnet) => {
         console.log("Magnet URI:", magnet);
+
         setMagnetURI(magnet);
+
         setTorrentStatus("ready");
 
-        const manager = peerManagerRef.current;
-        if (manager) {
-          manager.broadcast({
-            type: "MAGNET",
-            payload: {
-              magnetURI: magnet,
-              fileName: selectedFile.name,
-              fileSize: selectedFile.size,
-            },
+        /*
+         * Store torrent in RoomSession.
+         */
+        const session = roomSessionRef.current;
+
+        if (session) {
+          session.setTorrent({
+            torrentId: magnet,
+            magnetURI: magnet,
+            fileName: selectedFile.name,
+            fileSize: selectedFile.size,
           });
         }
+
+        const manager = peerManagerRef.current;
+
+        if (!manager) {
+          return;
+        }
+
+        /*
+         * Keep the existing MAGNET
+         * broadcast for compatibility.
+         *
+         * SESSION_STATE will eventually
+         * replace this for late joiners.
+         */
+        manager.broadcast({
+          type: "MAGNET",
+
+          payload: {
+            magnetURI: magnet,
+
+            fileName: selectedFile.name,
+
+            fileSize: selectedFile.size,
+          },
+        });
       },
+
       (error) => {
         console.error(error);
+
         setTorrentStatus("error");
-      }
+      },
     );
   }
 
@@ -284,17 +679,27 @@ export default function WatchParty() {
 
       <div className="mt-8 grid gap-8 md:grid-cols-2">
         {/* LEFT SIDE */}
+
         <div className="space-y-6">
-          <VideoPlayer src={videoSrc} autoPlay={false} />
+          <VideoPlayer
+            src={videoSrc}
+            torrentFile={torrentFile}
+            autoPlay={false}
+          />
+
           {/* Peer ID */}
+
           <div>
             <p className="text-sm text-gray-500">Your Peer ID</p>
+
             <p className="break-all font-mono">{peerId || "Generating..."}</p>
           </div>
 
           {/* Join room */}
+
           <div>
             <p className="mb-2 text-sm font-medium">Join Host</p>
+
             <div className="flex gap-2">
               <input
                 value={roomId}
@@ -302,6 +707,7 @@ export default function WatchParty() {
                 placeholder="Enter host Peer ID"
                 className="flex-1 rounded border px-3 py-2"
               />
+
               <button
                 onClick={joinRoom}
                 disabled={
@@ -316,26 +722,32 @@ export default function WatchParty() {
           </div>
 
           {/* Connection information */}
+
           <div className="rounded border p-4">
             <p className="text-sm text-gray-500">Role</p>
+
             <p className="font-semibold capitalize">{role}</p>
 
             <p className="mt-4 text-sm text-gray-500">Connection</p>
+
             <p
               className={`font-semibold capitalize ${
                 connectionStatus === "connected"
                   ? "text-green-600"
                   : connectionStatus === "error"
-                  ? "text-red-600"
-                  : "text-gray-500"
+                    ? "text-red-600"
+                    : "text-gray-500"
               }`}
             >
               {connectionStatus}
             </p>
           </div>
 
+          {/* Host Media */}
+
           <div className="space-y-3 rounded-xl border p-4">
             <h2 className="font-semibold">Host Media</h2>
+
             <input
               type="file"
               accept=".mp4,.webm,.mkv,video/mp4,video/webm"
@@ -365,9 +777,10 @@ export default function WatchParty() {
         </div>
 
         {/* RIGHT SIDE */}
+
         <ChatBox
           messages={messages}
-          role={role}
+          participantId={participantId}
           message={message}
           onMessageChange={setMessage}
           onSend={sendMessage}

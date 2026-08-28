@@ -1,8 +1,13 @@
-import type { PeerRole } from "./peer";
+//import type { PeerRole } from "./peer";
 
+export interface ChatSender {
+  participantId: string;
+  displayName: string;
+  peerId: string;
+}
 export interface ChatMessage {
   id: string;
   text: string;
-  sender: PeerRole;
+  sender: ChatSender;
   timestamp: number;
 }

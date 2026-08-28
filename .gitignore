@@ -45,4 +45,4 @@ next-env.d.ts
 *.vscode
 
 *.zip
-*version
+*version_code
