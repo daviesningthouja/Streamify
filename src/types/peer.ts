@@ -1,15 +1,8 @@
-import type {
-  ChatMessage,
-} from "./chat";
+import type { ChatMessage } from "./chat";
 
-import type {
-  Participant,
-  RoomSessionState,
-} from "./room";
+import type { Participant, RoomSessionState } from "./room";
 
-export type PeerRole =
-  | "host"
-  | "guest";
+export type PeerRole = "host" | "guest";
 
 export type PeerMessage =
   | {
@@ -19,13 +12,11 @@ export type PeerMessage =
         message: string;
       };
     }
-
   | {
       type: "CHAT";
 
       payload: ChatMessage;
     }
-
   | {
       type: "MAGNET";
 
@@ -35,7 +26,6 @@ export type PeerMessage =
         fileSize: number;
       };
     }
-
   | {
       type: "JOIN_ROOM";
 
@@ -43,9 +33,37 @@ export type PeerMessage =
         participant: Participant;
       };
     }
-
   | {
       type: "SESSION_STATE";
 
       payload: RoomSessionState;
+    }
+  | {
+      type: "PLAY";
+      payload: {
+        currentTime: number;
+        timestamp: number;
+      };
+    }
+  | {
+      type: "PAUSE";
+      payload: {
+        currentTime: number;
+        timestamp: number;
+      };
+    }
+  | {
+      type: "SEEK";
+      payload: {
+        currentTime: number;
+        timestamp: number;
+      };
+    }
+  | {
+      type: "SYNC";
+      payload: {
+        currentTime: number;
+        timestamp: number;
+        isPlaying: boolean;
+      };
     };

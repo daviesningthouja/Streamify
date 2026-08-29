@@ -10,9 +10,13 @@ export interface TorrentFile {
   name: string;
   length: number;
 
-  streamTo(
+  // streamTo(
+  //   element: HTMLVideoElement,
+  // ): void;
+  streamTo?: (
     element: HTMLVideoElement,
-  ): void;
+    callback?: (error?: Error) => void,
+  ) => void;
 }
 async function loadWebTorrent() {
   if (typeof window === "undefined") {
@@ -20,9 +24,7 @@ async function loadWebTorrent() {
   }
 
   if (!client) {
-    const module = await import(
-      "webtorrent/dist/webtorrent.min.js"
-    );
+    const module = await import("webtorrent/dist/webtorrent.min.js");
 
     const WebTorrent = module.default ?? module;
 
@@ -31,25 +33,16 @@ async function loadWebTorrent() {
 
   if (!serverReady) {
     if (!("serviceWorker" in navigator)) {
-      throw new Error(
-        "Service Workers are not supported in this browser.",
-      );
+      throw new Error("Service Workers are not supported in this browser.");
     }
 
     console.log("Registering WebTorrent Service Worker...");
 
-    const registration =
-      await navigator.serviceWorker.register(
-        "sw.min.js",
-        {
-          scope: "/",
-        },
-      );
+    const registration = await navigator.serviceWorker.register("sw.min.js", {
+      scope: "/",
+    });
 
-    console.log(
-      "Service Worker registration:",
-      registration,
-    );
+    console.log("Service Worker registration:", registration);
 
     await navigator.serviceWorker.ready;
 
@@ -74,9 +67,7 @@ async function loadWebTorrent() {
 
     serverReady = true;
 
-    console.log(
-      "WebTorrent browser server created.",
-    );
+    console.log("WebTorrent browser server created.");
   }
 
   return client;
@@ -104,21 +95,13 @@ export async function seedFile(
 export async function downloadTorrent(
   magnetURI: string,
   onReady: (file: any) => void,
-  onProgress?: (
-    progress: number,
-  ) => void,
-  onError?: (
-    error: Error,
-  ) => void,
+  onProgress?: (progress: number) => void,
+  onError?: (error: Error) => void,
 ) {
   try {
-    const torrentClient =
-      await loadWebTorrent();
+    const torrentClient = await loadWebTorrent();
 
-    console.log(
-      "Adding torrent:",
-      magnetURI,
-    );
+    console.log("Adding torrent:", magnetURI);
 
     /*
      * Prevent duplicate torrent
@@ -144,83 +127,46 @@ export async function downloadTorrent(
     //   return;
     // }
 
-    torrentClient.add(
-      magnetURI,
-      (torrent: any) => {
-        console.log(
-          "Torrent metadata received:",
-          torrent.name,
-        );
+    torrentClient.add(magnetURI, (torrent: any) => {
+      console.log("Torrent metadata received:", torrent.name);
 
-        torrent.on(
-          "download",
-          () => {
-            onProgress?.(
-              torrent.progress,
-            );
-          },
-        );
+      torrent.on("download", () => {
+        onProgress?.(torrent.progress);
+      });
 
-        torrent.on(
-          "done",
-          () => {
-            console.log(
-              "Torrent download complete",
-            );
+      torrent.on("done", () => {
+        console.log("Torrent download complete");
 
-            onProgress?.(1);
-          },
-        );
+        onProgress?.(1);
+      });
 
-        torrent.on(
-          "error",
-          (error: Error) => {
-            console.error(
-              "Torrent error:",
-              error,
-            );
+      torrent.on("error", (error: Error) => {
+        console.error("Torrent error:", error);
 
-            onError?.(error);
-          },
-        );
+        onError?.(error);
+      });
 
-        const file =
-          torrent.files[0];
+      const file = torrent.files[0];
 
-        if (!file) {
-          onError?.(
-            new Error(
-              "Torrent contains no files.",
-            ),
-          );
+      if (!file) {
+        onError?.(new Error("Torrent contains no files."));
 
-          return;
-        }
+        return;
+      }
 
-        console.log(
-          "Torrent file ready:",
-          file.name,
-        );
+      console.log("Torrent file ready:", file.name);
 
-        console.log(
-          "File size:",
-          file.length,
-        );
+      console.log("File size:", file.length);
 
-        /*
-         * IMPORTANT:
-         *
-         * Do NOT call file.blob().
-         */
-        onReady(file);
-      },
-    );
+      /*
+       * IMPORTANT:
+       *
+       * Do NOT call file.blob().
+       */
+      onReady(file);
+    });
   } catch (error) {
-    onError?.(
-      error instanceof Error
-        ? error
-        : new Error(String(error)),
-    );
+    onError?.(error instanceof Error ? error : new Error(String(error)));
   }
 }
 

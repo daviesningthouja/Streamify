@@ -18,7 +18,7 @@ import type { TorrentFile } from "@/lib/torrent";
 
 import type { TorrentStatus } from "@/types/torrent";
 
-import VideoPlayer from "@/components/VideoPlayer";
+import VideoPlayer, { VideoPlayerHandle } from "@/components/VideoPlayer";
 import { DataConnection } from "peerjs";
 
 export default function WatchParty() {
@@ -32,11 +32,11 @@ export default function WatchParty() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const videoPlayerRef = useRef<VideoPlayerHandle | null>(null);
   const [torrentFile, setTorrentFile] = useState<TorrentFile | null>(null);
 
   const [magnetURI, setMagnetURI] = useState("");
-  const activeMagnetRef =
-  useRef<string | null>(null);
+  const activeMagnetRef = useRef<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<
     "connecting" | "connected" | "disconnected" | "reconnecting" | "error"
   >("connecting");
@@ -54,86 +54,59 @@ export default function WatchParty() {
 
   const [roomId, setRoomId] = useState("");
 
+  //testing
+  const [syncEnabled, setSyncEnabled] = useState(true);
+  function getTimestamp(): number {
+    return Date.now();
+  }
   /*
    * -----------------------------------------
    * GUEST TORRENT
    * -----------------------------------------
    */
-async function handleGuestTorrent(
-  magnetURI: string,
-) {
-  console.log(
-    "Starting torrent download...",
-  );
-  if (
-  activeMagnetRef.current ===
-  magnetURI
-) {
-  console.log(
-    "Torrent already being loaded:",
-    magnetURI,
-  );
+  async function handleGuestTorrent(magnetURI: string) {
+    console.log("Starting torrent download...");
+    if (activeMagnetRef.current === magnetURI) {
+      console.log("Torrent already being loaded:", magnetURI);
 
-  return;
-}
+      return;
+    }
 
-activeMagnetRef.current =
-  magnetURI;
+    activeMagnetRef.current = magnetURI;
 
-  setTorrentStatus(
-    "downloading",
-  );
+    setTorrentStatus("downloading");
 
-  setVideoSrc(null);
-  setTorrentFile(null);
+    setVideoSrc(null);
+    setTorrentFile(null);
 
-  await downloadTorrent(
-    magnetURI,
+    await downloadTorrent(
+      magnetURI,
 
-    (file) => {
-      console.log(
-        "Torrent file ready:",
-        file.name,
-      );
+      (file) => {
+        console.log("Torrent file ready:", file.name);
 
-      console.log(
-        "File size:",
-        file.length,
-      );
+        console.log("File size:", file.length);
 
-      /*
-       * Give the actual WebTorrent
-       * File to VideoPlayer.
-       */
-      setTorrentFile(file);
+        /*
+         * Give the actual WebTorrent
+         * File to VideoPlayer.
+         */
+        setTorrentFile(file);
 
-      setTorrentStatus(
-        "ready",
-      );
-    },
+        setTorrentStatus("ready");
+      },
 
-    (progress) => {
-      console.log(
-        "Download progress:",
-        Math.round(
-          progress * 100,
-        ),
-        "%",
-      );
-    },
+      (progress) => {
+        console.log("Download progress:", Math.round(progress * 100), "%");
+      },
 
-    (error) => {
-      console.error(
-        "Torrent error:",
-        error,
-      );
+      (error) => {
+        console.error("Torrent error:", error);
 
-      setTorrentStatus(
-        "error",
-      );
-    },
-  );
-}
+        setTorrentStatus("error");
+      },
+    );
+  }
   /*
    * -----------------------------------------
    * ROOM SESSION
@@ -164,7 +137,7 @@ activeMagnetRef.current =
       /*
        * Only guests need to download.
        */
-      if (role === "guest") {
+      if (participantRef.current?.role === "guest") {
         handleGuestTorrent(session.torrent.magnetURI);
       }
     }
@@ -253,36 +226,25 @@ activeMagnetRef.current =
       }
 
       case "MAGNET": {
-  const magnet = incoming.payload;
+        const magnet = incoming.payload;
 
-  console.log(
-    "Received magnet:",
-    magnet.magnetURI,
-  );
+        console.log("Received magnet:", magnet.magnetURI);
 
-  /*
-   * Ignore MAGNET if this torrent
-   * is already being initialized
-   * from SESSION_STATE.
-   */
-  if (
-    activeMagnetRef.current ===
-    magnet.magnetURI
-  ) {
-    console.log(
-      "Ignoring duplicate MAGNET:",
-      magnet.magnetURI,
-    );
+        /*
+         * Ignore MAGNET if this torrent
+         * is already being initialized
+         * from SESSION_STATE.
+         */
+        if (activeMagnetRef.current === magnet.magnetURI) {
+          console.log("Ignoring duplicate MAGNET:", magnet.magnetURI);
 
-    break;
-  }
+          break;
+        }
 
-  handleGuestTorrent(
-    magnet.magnetURI,
-  );
+        handleGuestTorrent(magnet.magnetURI);
 
-  break;
-}
+        break;
+      }
 
       case "CHAT": {
         const chatMessage = incoming.payload;
@@ -316,6 +278,82 @@ activeMagnetRef.current =
               }
             }
           }
+        }
+
+        break;
+      }
+
+      case "PLAY": {
+        const { currentTime } = incoming.payload;
+
+        console.log("Remote PLAY received:", currentTime);
+
+        videoPlayerRef.current?.playAt(currentTime);
+
+        break;
+      }
+
+      case "PAUSE": {
+        const { currentTime } = incoming.payload;
+
+        console.log("Remote PAUSE received:", currentTime);
+
+        videoPlayerRef.current?.pauseAt(currentTime);
+
+        break;
+      }
+
+      case "SEEK": {
+        const { currentTime } = incoming.payload;
+
+        console.log("Remote SEEK received:", currentTime);
+
+        videoPlayerRef.current?.seekTo(currentTime);
+
+        break;
+      }
+      case "SYNC": {
+        if (role === "host") {
+          break;
+        }
+
+        const hostTime = incoming.payload.currentTime;
+
+        const guestTime = videoPlayerRef.current?.getCurrentTime();
+
+        if (guestTime === null || guestTime === undefined) {
+          break;
+        }
+
+        const drift = hostTime - guestTime;
+
+        console.log("SYNC received:", {
+          hostTime,
+          guestTime,
+          drift,
+        });
+
+        /*
+         * Small drift:
+         * don't perform a visible seek.
+         */
+        if (Math.abs(drift) < 0.5) {
+          break;
+        }
+
+        /*
+         * Larger drift:
+         * correct the guest position.
+         */
+        videoPlayerRef.current?.seekTo(hostTime);
+
+        /*
+         * Keep playback state consistent.
+         */
+        if (incoming.payload.isPlaying) {
+          void videoPlayerRef.current?.playAt(hostTime);
+        } else {
+          videoPlayerRef.current?.pauseAt(hostTime);
         }
 
         break;
@@ -673,6 +711,192 @@ activeMagnetRef.current =
     );
   }
 
+  /*
+   * -----------------------------------------
+   * PLAYBACK SYNCHRONIZATION
+   * -----------------------------------------
+   */
+
+  //   function canControlPlayback(): boolean {
+  //   return (
+  //     participantRef.current?.permissions
+  //       .canControlPlayback ?? false
+  //   );
+  // }
+  const canControlPlayback = role === "host";
+  useEffect(() => {
+  if (role !== "host" || !syncEnabled) {
+    return;
+  }
+
+  const interval = window.setInterval(() => {
+    const video = videoPlayerRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    const currentTime = video.getCurrentTime();
+
+    if (currentTime === null) {
+      return;
+    }
+
+    const isPlaying = video.isPlaying();
+    const timestamp = Date.now();
+
+    peerManagerRef.current?.broadcast({
+      type: "SYNC",
+      payload: {
+        currentTime,
+        timestamp,
+        isPlaying,
+      },
+    });
+
+    console.log("Broadcast SYNC:", {
+      currentTime,
+      timestamp,
+      isPlaying,
+    });
+  }, 5000);
+
+  return () => {
+    window.clearInterval(interval);
+  };
+}, [role, syncEnabled]);
+  function handleLocalPlay(currentTime: number) {
+    const participant = participantRef.current;
+    const manager = peerManagerRef.current;
+    const session = roomSessionRef.current;
+
+    if (!participant || !manager || !session) {
+      return;
+    }
+
+    // Only Host controls shared playback.
+    // if (participant.role !== "host") {
+    //   return;
+    // }
+
+    if (!canControlPlayback) {
+      console.log("PLAY ignored: playback control not authorized.");
+
+      return;
+    }
+
+    const timestamp = getTimestamp();
+    //const timestamp = Date.now();
+
+    /*
+     * Update room state.
+     */
+    session.updatePlayback(true, currentTime);
+
+    /*
+     * Broadcast PLAY to all guests.
+     */
+    manager.broadcast({
+      type: "PLAY",
+      payload: {
+        currentTime,
+        timestamp,
+      },
+    });
+
+    console.log("Broadcast PLAY:", {
+      currentTime,
+      timestamp,
+    });
+  }
+
+  function handleLocalPause(currentTime: number) {
+    const participant = participantRef.current;
+    const manager = peerManagerRef.current;
+    const session = roomSessionRef.current;
+
+    if (!participant || !manager || !session) {
+      return;
+    }
+
+    // Only Host controls shared playback.
+    // if (participant.role !== "host") {
+    //   return;
+    // }
+    if (!canControlPlayback) {
+      console.log("PAUSE ignored: playback control not authorized.");
+
+      return;
+    }
+
+    const timestamp = getTimestamp();
+    //const timestamp = Date.now();
+
+    /*
+     * Update room state.
+     */
+    session.updatePlayback(false, currentTime);
+
+    /*
+     * Broadcast PAUSE to all guests.
+     */
+    manager.broadcast({
+      type: "PAUSE",
+      payload: {
+        currentTime,
+        timestamp,
+      },
+    });
+
+    console.log("Broadcast PAUSE:", {
+      currentTime,
+      timestamp,
+    });
+  }
+
+  function handleLocalSeek(currentTime: number) {
+    const participant = participantRef.current;
+    const manager = peerManagerRef.current;
+    const session = roomSessionRef.current;
+
+    if (!participant || !manager || !session) {
+      return;
+    }
+
+    // Only Host controls shared playback.
+    if (!canControlPlayback) {
+      console.log("SEEK ignored: playback control not authorized.");
+
+      return;
+    }
+
+    const timestamp = getTimestamp();
+    //const timestamp = Date.now();
+
+    /*
+     * Keep the current play/pause state.
+     */
+    const playback = session.getPlayback();
+
+    session.updatePlayback(playback.isPlaying, currentTime);
+
+    /*
+     * Broadcast SEEK to all guests.
+     */
+    manager.broadcast({
+      type: "SEEK",
+      payload: {
+        currentTime,
+        timestamp,
+      },
+    });
+
+    console.log("Broadcast SEEK:", {
+      currentTime,
+      timestamp,
+    });
+  }
+
   return (
     <main className="min-h-screen p-8">
       <h1 className="text-3xl font-bold">Streamify</h1>
@@ -682,9 +906,14 @@ activeMagnetRef.current =
 
         <div className="space-y-6">
           <VideoPlayer
+            ref={videoPlayerRef}
             src={videoSrc}
             torrentFile={torrentFile}
+            canControlPlayback={canControlPlayback}
             autoPlay={false}
+            onPlay={handleLocalPlay}
+            onPause={handleLocalPause}
+            onSeek={handleLocalSeek}
           />
 
           {/* Peer ID */}
@@ -741,6 +970,15 @@ activeMagnetRef.current =
             >
               {connectionStatus}
             </p>
+            {/* Temporary performance test */}
+            {role === "host" && (
+              <button
+                onClick={() => setSyncEnabled((enabled) => !enabled)}
+                className="mt-4 rounded-lg border px-4 py-2 text-sm"
+              >
+                Sync Heartbeat: {syncEnabled ? "ON" : "OFF"}
+              </button>
+            )}
           </div>
 
           {/* Host Media */}

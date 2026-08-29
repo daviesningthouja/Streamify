@@ -7,6 +7,10 @@ export interface Participant {
   displayName: string;
   peerId: string;
   role: RoomRole;
+
+  permissions: {
+    canControlPlayback: boolean;
+  };
 }
 
 export interface TorrentState {
