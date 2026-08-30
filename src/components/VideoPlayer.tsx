@@ -142,11 +142,18 @@ import type { TorrentFile } from "@/lib/torrent";
 export interface VideoPlayerHandle {
   playAt: (currentTime: number) => Promise<void>;
   pauseAt: (currentTime: number) => void;
-  seekTo: (currentTime: number) => void;
+  seekTo: (currentTime: number) => Promise<void>;
 
   getCurrentTime: () => number | null;
   isPlaying: () => boolean;
   setPlaybackRate: (rate: number) => void;
+  getPlaybackInfo: () => {
+    currentTime: number;
+    bufferedUntil: number | null;
+    bufferAhead: number;
+    isPlaying: boolean;
+    isBuffering: boolean;
+  } | null;
 }
 
 interface VideoPlayerProps {
@@ -181,7 +188,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     //const remoteActionRef = useRef(false);
 
     //can be update optimise
-    const remoteActionRef = useRef<"play" | "pause" | "seek" | null>(null);
+    //const remoteActionRef = useRef<"play" | "pause" | "seek" | null>(null);
 
     const handleVideoReady = () => {
       const video = videoRef.current;
@@ -212,7 +219,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           }
 
           //remoteActionRef.current = true;
-          remoteActionRef.current = "play";
+          //remoteActionRef.current = "play";
 
           video.currentTime = currentTime;
 
@@ -237,21 +244,31 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           if (!video) {
             return;
           }
-          remoteActionRef.current = "pause";
+          //remoteActionRef.current = "pause";
 
           video.currentTime = currentTime;
           video.pause();
         },
 
-        seekTo(currentTime: number) {
+        async seekTo(currentTime: number) {
           const video = videoRef.current;
 
           if (!video) {
             return;
           }
-          remoteActionRef.current = "seek";
 
-          video.currentTime = currentTime;
+          await new Promise<void>((resolve) => {
+            const handleSeeked = () => {
+              video.removeEventListener("seeked", handleSeeked);
+              resolve();
+            };
+
+            video.addEventListener("seeked", handleSeeked, {
+              once: true,
+            });
+
+            video.currentTime = currentTime;
+          });
         },
         getCurrentTime() {
           const video = videoRef.current;
@@ -281,6 +298,34 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           }
 
           video.playbackRate = rate;
+        },
+        getPlaybackInfo() {
+          const video = videoRef.current;
+
+          if (!video) {
+            return null;
+          }
+
+          let bufferedUntil: number | null = null;
+
+          if (video.buffered.length > 0) {
+            bufferedUntil = video.buffered.end(video.buffered.length - 1);
+          }
+
+          const currentTime = video.currentTime;
+
+          const bufferAhead =
+            bufferedUntil !== null
+              ? Math.max(0, bufferedUntil - currentTime)
+              : 0;
+
+          return {
+            currentTime,
+            bufferedUntil,
+            bufferAhead,
+            isPlaying: !video.paused,
+            isBuffering: video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA,
+          };
         },
       }),
       [],
@@ -362,11 +407,11 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
               console.log("VideoPlayer: play", video.currentTime);
 
-              if (remoteActionRef.current) {
-                remoteActionRef.current = null;
+              // if (remoteActionRef.current) {
+              //   remoteActionRef.current = null;
 
-                return;
-              }
+              //   return;
+              // }
 
               onPlay?.(video.currentTime);
             }}
@@ -380,11 +425,11 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
               console.log("VideoPlayer: pause", video.currentTime);
 
-              if (remoteActionRef.current === "pause") {
-                remoteActionRef.current = null;
+              // if (remoteActionRef.current === "pause") {
+              //   remoteActionRef.current = null;
 
-                return;
-              }
+              //   return;
+              // }
 
               onPause?.(video.currentTime);
             }}
@@ -398,11 +443,11 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
               console.log("VideoPlayer: seeked", video.currentTime);
 
-              if (remoteActionRef.current === "seek") {
-                remoteActionRef.current = null;
+              // if (remoteActionRef.current === "seek") {
+              //   remoteActionRef.current = null;
 
-                return;
-              }
+              //   return;
+              // }
 
               onSeek?.(video.currentTime);
             }}

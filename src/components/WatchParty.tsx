@@ -156,7 +156,7 @@ export default function WatchParty() {
    * -----------------------------------------
    */
 
-   function handleIncomingData(data: unknown, connection: DataConnection) {
+  async function handleIncomingData(data: unknown, connection: DataConnection) {
     console.log("Received:", data);
 
     const incoming = data as PeerMessage;
@@ -294,10 +294,11 @@ export default function WatchParty() {
 
         playbackActionRef.current = "remote";
 
-        void videoPlayerRef.current?.playAt(
-          incoming.payload.currentTime,
-        );
-        playbackActionRef.current = null;
+        try {
+          await videoPlayerRef.current?.playAt(incoming.payload.currentTime);
+        } finally {
+          playbackActionRef.current = null;
+        }
 
         break;
       }
@@ -314,7 +315,11 @@ export default function WatchParty() {
 
         playbackActionRef.current = "remote";
 
-        videoPlayerRef.current?.pauseAt(incoming.payload.currentTime);
+        try {
+          videoPlayerRef.current?.pauseAt(incoming.payload.currentTime);
+        } finally {
+          playbackActionRef.current = null;
+        }
 
         break;
       }
@@ -328,7 +333,11 @@ export default function WatchParty() {
         console.log("Remote SEEK received:", incoming.payload.currentTime);
         playbackActionRef.current = "remote";
 
-        videoPlayerRef.current?.seekTo(incoming.payload.currentTime);
+        try {
+          videoPlayerRef.current?.seekTo(incoming.payload.currentTime);
+        } finally {
+          playbackActionRef.current = null;
+        }
 
         break;
       }
@@ -407,6 +416,18 @@ export default function WatchParty() {
         if (guestTime === null || guestTime === undefined) {
           return;
         }
+        const playbackInfo = videoPlayerRef.current?.getPlaybackInfo();
+
+        if (!playbackInfo) {
+          return;
+        }
+        console.log("SYNC playback info:", {
+          currentTime: playbackInfo.currentTime,
+          bufferedUntil: playbackInfo.bufferedUntil,
+          bufferAhead: playbackInfo.bufferAhead,
+          isPlaying: playbackInfo.isPlaying,
+          isBuffering: playbackInfo.isBuffering,
+        });
 
         const drift = predictedHostTime - guestTime;
 
@@ -427,7 +448,7 @@ export default function WatchParty() {
          * in the next step. //20-08-2026 which is added now
          */
         //
-        const absoluteDrift = Math.abs(drift);
+        //const absoluteDrift = Math.abs(drift);
 
         // if (absoluteDrift < 0.5) {
         //   videoPlayerRef.current?.setPlaybackRate(1);
@@ -443,22 +464,23 @@ export default function WatchParty() {
         //   return;
         // }
 
-        if (absoluteDrift < 0.15) {
-          videoPlayerRef.current?.setPlaybackRate(1);
-          return;
-        }
+        // if (absoluteDrift < 0.15) {
+        //   videoPlayerRef.current?.setPlaybackRate(1);
+        //   return;
+        // }
 
-        if (absoluteDrift < 1.5) {
-          const correctionRate = drift > 0 ? 1.05 : 0.95;
+        // if (absoluteDrift < 1.5) {
+        //   const correctionRate = drift > 0 ? 1.05 : 0.95;
 
-          videoPlayerRef.current?.setPlaybackRate(correctionRate);
+        //   videoPlayerRef.current?.setPlaybackRate(correctionRate);
 
-          return;
-        }
+        //   return;
+        // }
 
+        
         videoPlayerRef.current?.setPlaybackRate(1);
 
-        videoPlayerRef.current?.seekTo(predictedHostTime);
+        //videoPlayerRef.current?.seekTo(predictedHostTime);
         break;
       }
     }
@@ -868,13 +890,24 @@ export default function WatchParty() {
   }, [role, syncEnabled]);
 
   function handleLocalPlay(currentTime: number) {
-    if (playbackActionRef.current === "remote") {
-      playbackActionRef.current = null;
+    // if (playbackActionRef.current === "remote") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    // if (playbackActionRef.current === "sync") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    const action = playbackActionRef.current;
+    if (action !== "local") {
       return;
     }
 
-    if (playbackActionRef.current === "sync") {
-      playbackActionRef.current = null;
+    if (!canControlPlayback) {
+      console.log("PLAY ignored: playback control not authorized.");
+
       return;
     }
 
@@ -925,13 +958,25 @@ export default function WatchParty() {
   }
 
   function handleLocalPause(currentTime: number) {
-    if (playbackActionRef.current === "remote") {
-      playbackActionRef.current = null;
+    // if (playbackActionRef.current === "remote") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    // if (playbackActionRef.current === "sync") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    const action = playbackActionRef.current;
+
+    if (action !== "local") {
       return;
     }
 
-    if (playbackActionRef.current === "sync") {
-      playbackActionRef.current = null;
+    if (!canControlPlayback) {
+      console.log("PAUSE ignored: playback control not authorized.");
+
       return;
     }
     const participant = participantRef.current;
@@ -979,13 +1024,25 @@ export default function WatchParty() {
   }
 
   function handleLocalSeek(currentTime: number) {
-    if (playbackActionRef.current === "remote") {
-      playbackActionRef.current = null;
+    // if (playbackActionRef.current === "remote") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    // if (playbackActionRef.current === "sync") {
+    //   playbackActionRef.current = null;
+    //   return;
+    // }
+
+    const action = playbackActionRef.current;
+
+    if (action !== "local") {
       return;
     }
 
-    if (playbackActionRef.current === "sync") {
-      playbackActionRef.current = null;
+    if (!canControlPlayback) {
+      console.log("SEEK ignored: playback control not authorized.");
+
       return;
     }
     const participant = participantRef.current;
