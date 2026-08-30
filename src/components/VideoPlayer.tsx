@@ -146,6 +146,7 @@ export interface VideoPlayerHandle {
 
   getCurrentTime: () => number | null;
   isPlaying: () => boolean;
+  setPlaybackRate: (rate: number) => void;
 }
 
 interface VideoPlayerProps {
@@ -177,10 +178,10 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
   ) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const streamReadyRef = useRef(false);
-    const remoteActionRef = useRef(false);
+    //const remoteActionRef = useRef(false);
 
     //can be update optimise
-    // const remoteActionRef = useRef<"play" | "pause" | "seek" | null>(null);
+    const remoteActionRef = useRef<"play" | "pause" | "seek" | null>(null);
 
     const handleVideoReady = () => {
       const video = videoRef.current;
@@ -210,13 +211,22 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
             return;
           }
 
-          remoteActionRef.current = true;
+          //remoteActionRef.current = true;
+          remoteActionRef.current = "play";
 
           video.currentTime = currentTime;
 
           try {
             await video.play();
           } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+              console.log(
+                "VideoPlayer: remote play interrupted by another playback action.",
+              );
+
+              return;
+            }
+
             console.error("VideoPlayer: remote play failed:", error);
           }
         },
@@ -227,7 +237,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           if (!video) {
             return;
           }
-          remoteActionRef.current = true;
+          remoteActionRef.current = "pause";
 
           video.currentTime = currentTime;
           video.pause();
@@ -239,7 +249,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           if (!video) {
             return;
           }
-          remoteActionRef.current = true;
+          remoteActionRef.current = "seek";
 
           video.currentTime = currentTime;
         },
@@ -261,6 +271,16 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           }
 
           return !video.paused;
+        },
+
+        setPlaybackRate(rate: number) {
+          const video = videoRef.current;
+
+          if (!video) {
+            return;
+          }
+
+          video.playbackRate = rate;
         },
       }),
       [],
@@ -343,13 +363,14 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
               console.log("VideoPlayer: play", video.currentTime);
 
               if (remoteActionRef.current) {
-                remoteActionRef.current = false;
+                remoteActionRef.current = null;
 
                 return;
               }
 
               onPlay?.(video.currentTime);
             }}
+            //pause
             onPause={() => {
               const video = videoRef.current;
 
@@ -359,14 +380,15 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
               console.log("VideoPlayer: pause", video.currentTime);
 
-              if (remoteActionRef.current) {
-                remoteActionRef.current = false;
+              if (remoteActionRef.current === "pause") {
+                remoteActionRef.current = null;
 
                 return;
               }
 
               onPause?.(video.currentTime);
             }}
+            //onSeek
             onSeeked={() => {
               const video = videoRef.current;
 
@@ -376,8 +398,8 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
               console.log("VideoPlayer: seeked", video.currentTime);
 
-              if (remoteActionRef.current) {
-                remoteActionRef.current = false;
+              if (remoteActionRef.current === "seek") {
+                remoteActionRef.current = null;
 
                 return;
               }

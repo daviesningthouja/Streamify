@@ -33,6 +33,7 @@ export default function WatchParty() {
 
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const videoPlayerRef = useRef<VideoPlayerHandle | null>(null);
+  const playbackActionRef = useRef<"local" | "remote" | "sync" | null>(null);
   const [torrentFile, setTorrentFile] = useState<TorrentFile | null>(null);
 
   const [magnetURI, setMagnetURI] = useState("");
@@ -155,7 +156,7 @@ export default function WatchParty() {
    * -----------------------------------------
    */
 
-  function handleIncomingData(data: unknown, connection: DataConnection) {
+   function handleIncomingData(data: unknown, connection: DataConnection) {
     console.log("Received:", data);
 
     const incoming = data as PeerMessage;
@@ -284,82 +285,182 @@ export default function WatchParty() {
       }
 
       case "PLAY": {
-        const { currentTime } = incoming.payload;
+        // const { currentTime } = incoming.payload;
 
-        console.log("Remote PLAY received:", currentTime);
+        // console.log("Remote PLAY received:", currentTime);
 
-        videoPlayerRef.current?.playAt(currentTime);
+        // videoPlayerRef.current?.playAt(currentTime);
+        console.log("Remote PLAY received:", incoming.payload.currentTime);
+
+        playbackActionRef.current = "remote";
+
+        void videoPlayerRef.current?.playAt(
+          incoming.payload.currentTime,
+        );
+        playbackActionRef.current = null;
 
         break;
       }
 
       case "PAUSE": {
-        const { currentTime } = incoming.payload;
+        // const { currentTime } = incoming.payload;
 
-        console.log("Remote PAUSE received:", currentTime);
+        // console.log("Remote PAUSE received:", currentTime);
 
-        videoPlayerRef.current?.pauseAt(currentTime);
+        // videoPlayerRef.current?.pauseAt(currentTime);
+
+        // break;
+        console.log("Remote PAUSE received:", incoming.payload.currentTime);
+
+        playbackActionRef.current = "remote";
+
+        videoPlayerRef.current?.pauseAt(incoming.payload.currentTime);
 
         break;
       }
 
       case "SEEK": {
-        const { currentTime } = incoming.payload;
+        // const { currentTime } = incoming.payload;
 
-        console.log("Remote SEEK received:", currentTime);
+        // console.log("Remote SEEK received:", currentTime);
 
-        videoPlayerRef.current?.seekTo(currentTime);
+        // videoPlayerRef.current?.seekTo(currentTime);
+        console.log("Remote SEEK received:", incoming.payload.currentTime);
+        playbackActionRef.current = "remote";
+
+        videoPlayerRef.current?.seekTo(incoming.payload.currentTime);
 
         break;
       }
-      case "SYNC": {
-        if (role === "host") {
-          break;
-        }
 
-        const hostTime = incoming.payload.currentTime;
+      //   case "SYNC": {
+      //     if (role === "host") {
+      //       break;
+      //     }
+
+      //     const hostTime = incoming.payload.currentTime;
+
+      //     const guestTime = videoPlayerRef.current?.getCurrentTime();
+
+      //     if (guestTime === null || guestTime === undefined) {
+      //       break;
+      //     }
+
+      //     const drift = hostTime - guestTime;
+
+      //     console.log("SYNC received:", {
+      //       hostTime,
+      //       guestTime,
+      //       drift,
+      //     });
+
+      //     /*
+      //      * Small drift:
+      //      * don't perform a visible seek.
+      //      */
+      //     if (Math.abs(drift) < 0.5) {
+      //       break;
+      //     }
+
+      //     /*
+      //      * Larger drift:
+      //      * correct the guest position.
+      //      */
+      //     videoPlayerRef.current?.seekTo(hostTime);
+
+      //     /*
+      //      * Keep playback state consistent.
+      //      */
+      //     if (incoming.payload.isPlaying) {
+      //       void videoPlayerRef.current?.playAt(hostTime);
+      //     } else {
+      //       videoPlayerRef.current?.pauseAt(hostTime);
+      //     }
+
+      //     break;
+      //   }
+      //   default:
+      //     console.warn("Unknown message type:", incoming);
+      case "SYNC": {
+        const {
+          currentTime: hostTime,
+          timestamp: hostTimestamp,
+          isPlaying: hostIsPlaying,
+        } = incoming.payload;
+
+        const now = Date.now();
+
+        /*
+         * Estimate where the host should be now.
+         *
+         * If the host is playing, time has continued
+         * to advance since the SYNC message was created.
+         */
+        const elapsedSeconds = hostIsPlaying
+          ? Math.max(0, now - hostTimestamp) / 1000
+          : 0;
+
+        const predictedHostTime = hostTime + elapsedSeconds;
 
         const guestTime = videoPlayerRef.current?.getCurrentTime();
 
         if (guestTime === null || guestTime === undefined) {
-          break;
+          return;
         }
 
-        const drift = hostTime - guestTime;
+        const drift = predictedHostTime - guestTime;
 
-        console.log("SYNC received:", {
+        console.log("SYNC calculation:", {
           hostTime,
+          hostTimestamp,
           guestTime,
+          elapsedSeconds,
+          predictedHostTime,
           drift,
+          hostIsPlaying,
         });
 
         /*
-         * Small drift:
-         * don't perform a visible seek.
+         * For now, only observe the drift.
+         *
+         * We will add correction thresholds
+         * in the next step. //20-08-2026 which is added now
          */
-        if (Math.abs(drift) < 0.5) {
-          break;
+        //
+        const absoluteDrift = Math.abs(drift);
+
+        // if (absoluteDrift < 0.5) {
+        //   videoPlayerRef.current?.setPlaybackRate(1);
+
+        //   return;
+        // }
+
+        // if (absoluteDrift < 2) {
+        //   const correctionRate = drift > 0 ? 1.03 : 0.97;
+
+        //   videoPlayerRef.current?.setPlaybackRate(correctionRate);
+
+        //   return;
+        // }
+
+        if (absoluteDrift < 0.15) {
+          videoPlayerRef.current?.setPlaybackRate(1);
+          return;
         }
 
-        /*
-         * Larger drift:
-         * correct the guest position.
-         */
-        videoPlayerRef.current?.seekTo(hostTime);
+        if (absoluteDrift < 1.5) {
+          const correctionRate = drift > 0 ? 1.05 : 0.95;
 
-        /*
-         * Keep playback state consistent.
-         */
-        if (incoming.payload.isPlaying) {
-          void videoPlayerRef.current?.playAt(hostTime);
-        } else {
-          videoPlayerRef.current?.pauseAt(hostTime);
+          videoPlayerRef.current?.setPlaybackRate(correctionRate);
+
+          return;
         }
 
+        videoPlayerRef.current?.setPlaybackRate(1);
+
+        videoPlayerRef.current?.seekTo(predictedHostTime);
         break;
       }
-      default:
-        console.warn("Unknown message type:", incoming);
     }
   }
 
@@ -725,47 +826,60 @@ export default function WatchParty() {
   // }
   const canControlPlayback = role === "host";
   useEffect(() => {
-  if (role !== "host" || !syncEnabled) {
-    return;
-  }
-
-  const interval = window.setInterval(() => {
-    const video = videoPlayerRef.current;
-
-    if (!video) {
+    if (role !== "host" || !syncEnabled) {
       return;
     }
 
-    const currentTime = video.getCurrentTime();
+    const interval = window.setInterval(() => {
+      const video = videoPlayerRef.current;
 
-    if (currentTime === null) {
-      return;
-    }
+      if (!video) {
+        return;
+      }
 
-    const isPlaying = video.isPlaying();
-    const timestamp = Date.now();
+      const currentTime = video.getCurrentTime();
 
-    peerManagerRef.current?.broadcast({
-      type: "SYNC",
-      payload: {
+      if (currentTime === null) {
+        return;
+      }
+
+      const isPlaying = video.isPlaying();
+      const timestamp = Date.now();
+
+      peerManagerRef.current?.broadcast({
+        type: "SYNC",
+        payload: {
+          currentTime,
+          timestamp,
+          isPlaying,
+        },
+      });
+
+      console.log("Broadcast SYNC:", {
         currentTime,
         timestamp,
         isPlaying,
-      },
-    });
+      });
+    }, 5000);
 
-    console.log("Broadcast SYNC:", {
-      currentTime,
-      timestamp,
-      isPlaying,
-    });
-  }, 5000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [role, syncEnabled]);
 
-  return () => {
-    window.clearInterval(interval);
-  };
-}, [role, syncEnabled]);
   function handleLocalPlay(currentTime: number) {
+    if (playbackActionRef.current === "remote") {
+      playbackActionRef.current = null;
+      return;
+    }
+
+    if (playbackActionRef.current === "sync") {
+      playbackActionRef.current = null;
+      return;
+    }
+
+    //playbackActionRef.current = "local";
+
     const participant = participantRef.current;
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
@@ -811,7 +925,17 @@ export default function WatchParty() {
   }
 
   function handleLocalPause(currentTime: number) {
+    if (playbackActionRef.current === "remote") {
+      playbackActionRef.current = null;
+      return;
+    }
+
+    if (playbackActionRef.current === "sync") {
+      playbackActionRef.current = null;
+      return;
+    }
     const participant = participantRef.current;
+
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
 
@@ -855,6 +979,15 @@ export default function WatchParty() {
   }
 
   function handleLocalSeek(currentTime: number) {
+    if (playbackActionRef.current === "remote") {
+      playbackActionRef.current = null;
+      return;
+    }
+
+    if (playbackActionRef.current === "sync") {
+      playbackActionRef.current = null;
+      return;
+    }
     const participant = participantRef.current;
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
