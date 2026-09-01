@@ -26,6 +26,12 @@ export default function WatchParty() {
   const hostConnectionRef = useRef<DataConnection | null>(null);
 
   const roomSessionRef = useRef<RoomSession | null>(null);
+  // const playbackReadyRef = useRef(false);
+
+  // const pendingPlaybackStateRef = useRef<{
+  //   currentTime: number;
+  //   isPlaying: boolean;
+  // } | null>(null);
 
   const participantRef = useRef<Participant | null>(null);
 
@@ -33,7 +39,9 @@ export default function WatchParty() {
 
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const videoPlayerRef = useRef<VideoPlayerHandle | null>(null);
-  const playbackActionRef = useRef<"local" | "remote" | "sync" | null>(null);
+  // const playbackActionRef = useRef<"local" | "remote" | "sync" | null>(null);
+
+  const lastCorrectionRef = useRef<"rate" | "seek" | "none">("none");
   const [torrentFile, setTorrentFile] = useState<TorrentFile | null>(null);
 
   const [magnetURI, setMagnetURI] = useState("");
@@ -79,6 +87,8 @@ export default function WatchParty() {
 
     setVideoSrc(null);
     setTorrentFile(null);
+    // playbackReadyRef.current = false;
+    // pendingPlaybackStateRef.current = null;
 
     await downloadTorrent(
       magnetURI,
@@ -285,151 +295,155 @@ export default function WatchParty() {
       }
 
       case "PLAY": {
-        // const { currentTime } = incoming.payload;
+        const { currentTime } = incoming.payload;
 
-        // console.log("Remote PLAY received:", currentTime);
-
-        // videoPlayerRef.current?.playAt(currentTime);
-        console.log("Remote PLAY received:", incoming.payload.currentTime);
-
-        playbackActionRef.current = "remote";
+        console.log("Remote PLAY received:", currentTime);
 
         try {
-          await videoPlayerRef.current?.playAt(incoming.payload.currentTime);
-        } finally {
-          playbackActionRef.current = null;
+          await videoPlayerRef.current?.playAt(currentTime);
+        } catch (error) {
+          console.error("Remote PLAY failed:", error);
         }
 
         break;
       }
-
       case "PAUSE": {
-        // const { currentTime } = incoming.payload;
+        const { currentTime } = incoming.payload;
 
-        // console.log("Remote PAUSE received:", currentTime);
-
-        // videoPlayerRef.current?.pauseAt(currentTime);
-
-        // break;
-        console.log("Remote PAUSE received:", incoming.payload.currentTime);
-
-        playbackActionRef.current = "remote";
+        console.log("Remote PAUSE received:", currentTime);
 
         try {
-          videoPlayerRef.current?.pauseAt(incoming.payload.currentTime);
-        } finally {
-          playbackActionRef.current = null;
+          await videoPlayerRef.current?.pauseAt(currentTime);
+        } catch (error) {
+          console.error("Remote PAUSE failed:", error);
         }
 
         break;
       }
 
       case "SEEK": {
-        // const { currentTime } = incoming.payload;
+        const { currentTime } = incoming.payload;
 
-        // console.log("Remote SEEK received:", currentTime);
-
-        // videoPlayerRef.current?.seekTo(currentTime);
-        console.log("Remote SEEK received:", incoming.payload.currentTime);
-        playbackActionRef.current = "remote";
+        console.log("Remote SEEK received:", currentTime);
 
         try {
-          videoPlayerRef.current?.seekTo(incoming.payload.currentTime);
-        } finally {
-          playbackActionRef.current = null;
+          await videoPlayerRef.current?.seekTo(currentTime);
+        } catch (error) {
+          console.error("Remote SEEK failed:", error);
         }
 
         break;
       }
 
-      //   case "SYNC": {
-      //     if (role === "host") {
-      //       break;
-      //     }
-
-      //     const hostTime = incoming.payload.currentTime;
-
-      //     const guestTime = videoPlayerRef.current?.getCurrentTime();
-
-      //     if (guestTime === null || guestTime === undefined) {
-      //       break;
-      //     }
-
-      //     const drift = hostTime - guestTime;
-
-      //     console.log("SYNC received:", {
-      //       hostTime,
-      //       guestTime,
-      //       drift,
-      //     });
-
-      //     /*
-      //      * Small drift:
-      //      * don't perform a visible seek.
-      //      */
-      //     if (Math.abs(drift) < 0.5) {
-      //       break;
-      //     }
-
-      //     /*
-      //      * Larger drift:
-      //      * correct the guest position.
-      //      */
-      //     videoPlayerRef.current?.seekTo(hostTime);
-
-      //     /*
-      //      * Keep playback state consistent.
-      //      */
-      //     if (incoming.payload.isPlaying) {
-      //       void videoPlayerRef.current?.playAt(hostTime);
-      //     } else {
-      //       videoPlayerRef.current?.pauseAt(hostTime);
-      //     }
-
-      //     break;
-      //   }
-      //   default:
-      //     console.warn("Unknown message type:", incoming);
       case "SYNC": {
+        /*
+         * SYNC is authoritative from the host.
+         *
+         * Guests use it to:
+         * 1. Estimate the host's current playback position.
+         * 2. Compare it with their own position.
+         * 3. Correct playback when necessary.
+         *
+         * The host does not process its own SYNC messages.
+         */
+        if (role === "host") {
+          break;
+        }
+
+        // --------------------------------------------------
+        // 1. Read host playback state
+        // --------------------------------------------------
+
         const {
           currentTime: hostTime,
           timestamp: hostTimestamp,
           isPlaying: hostIsPlaying,
         } = incoming.payload;
 
+        // --------------------------------------------------
+        // 2. Read guest playback state
+        // --------------------------------------------------
+
+        const playbackInfo = videoPlayerRef.current?.getPlaybackInfo();
+
+        if (!playbackInfo) {
+          break;
+        }
+
+        const {
+          currentTime: guestTime,
+          bufferedUntil,
+          bufferAhead,
+          isPlaying: guestIsPlaying,
+          isBuffering,
+        } = playbackInfo;
+
+        // --------------------------------------------------
+        // 3. Predict current host position
+        // --------------------------------------------------
+
         const now = Date.now();
 
         /*
-         * Estimate where the host should be now.
+         * If the host is playing, the host has continued
+         * advancing since the SYNC packet was created.
          *
-         * If the host is playing, time has continued
-         * to advance since the SYNC message was created.
+         * Example:
+         *
+         * hostTime      = 100.0
+         * packet age    = 0.2 sec
+         *
+         * predictedHostTime = 100.2
+         *
+         * If the host is paused, time must NOT advance.
          */
         const elapsedSeconds = hostIsPlaying
           ? Math.max(0, now - hostTimestamp) / 1000
           : 0;
 
         const predictedHostTime = hostTime + elapsedSeconds;
+        // if (!playbackReadyRef.current) {
+        //   pendingPlaybackStateRef.current = {
+        //     currentTime: predictedHostTime,
+        //     isPlaying: hostIsPlaying,
+        //   };
 
-        const guestTime = videoPlayerRef.current?.getCurrentTime();
+        //   console.log("SYNC: video not ready. Saving pending playback state.", {
+        //     currentTime: predictedHostTime,
+        //     isPlaying: hostIsPlaying,
+        //   });
 
-        if (guestTime === null || guestTime === undefined) {
-          return;
-        }
-        const playbackInfo = videoPlayerRef.current?.getPlaybackInfo();
+        //   break;
+        // }
+        // const playbackInfo = videoPlayerRef.current?.getPlaybackInfo();
 
-        if (!playbackInfo) {
-          return;
-        }
-        console.log("SYNC playback info:", {
-          currentTime: playbackInfo.currentTime,
-          bufferedUntil: playbackInfo.bufferedUntil,
-          bufferAhead: playbackInfo.bufferAhead,
-          isPlaying: playbackInfo.isPlaying,
-          isBuffering: playbackInfo.isBuffering,
-        });
+        // if (!playbackInfo) {
+        //   break;
+        // }
+
+        // const {
+        //   currentTime: guestTime,
+        //   bufferedUntil,
+        //   bufferAhead,
+        //   isPlaying: guestIsPlaying,
+        //   isBuffering,
+        // } = playbackInfo;
+
+        // --------------------------------------------------
+        // 4. Calculate drift
+        // --------------------------------------------------
 
         const drift = predictedHostTime - guestTime;
+
+        const absoluteDrift = Math.abs(drift);
+
+        console.log("SYNC playback info:", {
+          currentTime: guestTime,
+          bufferedUntil,
+          bufferAhead,
+          isPlaying: guestIsPlaying,
+          isBuffering,
+        });
 
         console.log("SYNC calculation:", {
           hostTime,
@@ -438,49 +452,310 @@ export default function WatchParty() {
           elapsedSeconds,
           predictedHostTime,
           drift,
+          absoluteDrift,
           hostIsPlaying,
+          guestIsPlaying,
         });
 
+        // ==================================================
+        // HOST PAUSED
+        // ==================================================
+
+        if (!hostIsPlaying) {
+          /*
+           * Host is paused.
+           *
+           * No playback-rate correction should happen while
+           * paused.
+           */
+          videoPlayerRef.current?.setPlaybackRate(1);
+
+          /*
+           * If the guest is still playing, stop it and place
+           * it at the authoritative host position.
+           *
+           * pauseAt() is an imperative VideoPlayer command,
+           * so its resulting DOM events are suppressed there.
+           */
+          if (guestIsPlaying) {
+            try {
+              await videoPlayerRef.current?.pauseAt(hostTime);
+            } catch (error) {
+              console.error("SYNC pause failed:", error);
+            }
+          } else {
+            /*
+             * Guest is already paused.
+             *
+             * If the positions differ significantly, correct
+             * the position while remaining paused.
+             */
+            if (absoluteDrift >= 0.15) {
+              /*
+               * Only seek if the target is currently
+               * available.
+               */
+              const targetIsBuffered =
+                bufferedUntil !== null && hostTime <= bufferedUntil;
+
+              if (targetIsBuffered) {
+                try {
+                  await videoPlayerRef.current?.seekTo(hostTime);
+                } catch (error) {
+                  console.error("SYNC paused seek failed:", error);
+                }
+              }
+            }
+          }
+
+          lastCorrectionRef.current = "none";
+
+          break;
+        }
+
+        // ==================================================
+        // HOST PLAYING
+        // ==================================================
+
         /*
-         * For now, only observe the drift.
+         * At this point:
          *
-         * We will add correction thresholds
-         * in the next step. //20-08-2026 which is added now
+         * hostIsPlaying === true
          */
-        //
-        //const absoluteDrift = Math.abs(drift);
 
-        // if (absoluteDrift < 0.5) {
-        //   videoPlayerRef.current?.setPlaybackRate(1);
+        // --------------------------------------------------
+        // Guest is paused
+        // --------------------------------------------------
 
-        //   return;
-        // }
+        if (!guestIsPlaying) {
+          /*
+           * If the guest is far behind, move directly to
+           * the predicted host position before playing.
+           */
+          if (absoluteDrift >= 1.5) {
+            /*
+             * Never seek while the media pipeline is
+             * buffering.
+             */
+            if (isBuffering) {
+              videoPlayerRef.current?.setPlaybackRate(1);
 
-        // if (absoluteDrift < 2) {
-        //   const correctionRate = drift > 0 ? 1.03 : 0.97;
+              lastCorrectionRef.current = "none";
 
-        //   videoPlayerRef.current?.setPlaybackRate(correctionRate);
+              console.log("SYNC: guest paused and media is buffering.", {
+                guestTime,
+                predictedHostTime,
+                drift,
+                bufferAhead,
+                bufferedUntil,
+              });
 
-        //   return;
-        // }
+              break;
+            }
 
-        // if (absoluteDrift < 0.15) {
-        //   videoPlayerRef.current?.setPlaybackRate(1);
-        //   return;
-        // }
+            /*
+             * Don't seek beyond the media currently available.
+             */
+            const targetIsBuffered =
+              bufferedUntil !== null && predictedHostTime <= bufferedUntil;
 
-        // if (absoluteDrift < 1.5) {
-        //   const correctionRate = drift > 0 ? 1.05 : 0.95;
+            if (!targetIsBuffered) {
+              videoPlayerRef.current?.setPlaybackRate(1);
 
-        //   videoPlayerRef.current?.setPlaybackRate(correctionRate);
+              lastCorrectionRef.current = "none";
 
-        //   return;
-        // }
+              console.log("SYNC: guest paused but target is not buffered.", {
+                guestTime,
+                predictedHostTime,
+                drift,
+                bufferedUntil,
+                bufferAhead,
+              });
 
-        
-        videoPlayerRef.current?.setPlaybackRate(1);
+              break;
+            }
 
-        //videoPlayerRef.current?.seekTo(predictedHostTime);
+            /*
+             * Target is available.
+             *
+             * First seek, then play.
+             */
+            try {
+              videoPlayerRef.current?.setPlaybackRate(1);
+
+              await videoPlayerRef.current?.seekTo(predictedHostTime);
+
+              await videoPlayerRef.current?.playAt(predictedHostTime);
+
+              lastCorrectionRef.current = "seek";
+            } catch (error) {
+              console.error("SYNC paused-guest recovery failed:", error);
+            }
+
+            break;
+          }
+
+          /*
+           * Guest is paused but already close enough to the
+           * host position.
+           *
+           * Resume from the guest's current position.
+           *
+           * This avoids an unnecessary seek.
+           */
+          try {
+            await videoPlayerRef.current?.playAt(guestTime);
+
+            lastCorrectionRef.current = "none";
+          } catch (error) {
+            console.error("SYNC guest resume failed:", error);
+          }
+
+          break;
+        }
+
+        // ==================================================
+        // BOTH HOST AND GUEST ARE PLAYING
+        // ==================================================
+
+        // --------------------------------------------------
+        // Small drift
+        // --------------------------------------------------
+
+        if (absoluteDrift < 0.15) {
+          /*
+           * Less than 150 ms.
+           *
+           * This is close enough. Don't touch playback.
+           */
+          videoPlayerRef.current?.setPlaybackRate(1);
+
+          lastCorrectionRef.current = "none";
+
+          break;
+        }
+
+        // --------------------------------------------------
+        // Moderate drift
+        // --------------------------------------------------
+
+        if (absoluteDrift < 1.5) {
+          /*
+           * 150 ms → 1.5 sec
+           *
+           * Correct gradually instead of visibly jumping.
+           */
+          const correctionRate = drift > 0 ? 1.03 : 0.97;
+
+          videoPlayerRef.current?.setPlaybackRate(correctionRate);
+
+          lastCorrectionRef.current = "rate";
+
+          console.log("SYNC: applying playback-rate correction.", {
+            drift,
+            correctionRate,
+          });
+
+          break;
+        }
+
+        // --------------------------------------------------
+        // Large drift
+        // --------------------------------------------------
+
+        /*
+         * We only reach this section when:
+         *
+         * absoluteDrift >= 1.5
+         *
+         * The guest is already playing.
+         */
+
+        // --------------------------------------------------
+        // Buffer protection
+        // --------------------------------------------------
+
+        if (isBuffering) {
+          /*
+           * Don't make a seek while the media pipeline is
+           * already struggling to provide data.
+           */
+          videoPlayerRef.current?.setPlaybackRate(1);
+
+          lastCorrectionRef.current = "none";
+
+          console.log("SYNC: large drift but video is buffering.", {
+            guestTime,
+            predictedHostTime,
+            drift,
+            bufferAhead,
+            bufferedUntil,
+          });
+
+          break;
+        }
+
+        // --------------------------------------------------
+        // Target buffer protection
+        // --------------------------------------------------
+
+        const targetIsBuffered =
+          bufferedUntil !== null && predictedHostTime <= bufferedUntil;
+
+        if (!targetIsBuffered) {
+          /*
+           * The guest cannot seek to a position that the
+           * media pipeline hasn't made available yet.
+           *
+           * Let WebTorrent continue filling the buffer.
+           */
+          videoPlayerRef.current?.setPlaybackRate(1);
+
+          lastCorrectionRef.current = "none";
+
+          console.log("SYNC: target not buffered yet.", {
+            guestTime,
+            predictedHostTime,
+            drift,
+            bufferedUntil,
+            bufferAhead,
+          });
+
+          break;
+        }
+
+        // --------------------------------------------------
+        // Hard correction
+        // --------------------------------------------------
+
+        /*
+         * The target is available and the drift is large.
+         *
+         * Seek directly to the predicted host position.
+         *
+         * Because seekTo() is an imperative VideoPlayer
+         * operation, the resulting seeked event will NOT
+         * be treated as a local user SEEK.
+         */
+        try {
+          videoPlayerRef.current?.setPlaybackRate(1);
+
+          await videoPlayerRef.current?.seekTo(predictedHostTime);
+
+          lastCorrectionRef.current = "seek";
+
+          /*
+           * Host is playing and guest was already playing.
+           *
+           * seekTo() does not pause the video, so playback
+           * continues after the seek.
+           *
+           * We intentionally do NOT call playAt() here.
+           */
+        } catch (error) {
+          console.error("SYNC hard correction failed:", error);
+        }
+
         break;
       }
     }
@@ -890,59 +1165,23 @@ export default function WatchParty() {
   }, [role, syncEnabled]);
 
   function handleLocalPlay(currentTime: number) {
-    // if (playbackActionRef.current === "remote") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    // if (playbackActionRef.current === "sync") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    const action = playbackActionRef.current;
-    if (action !== "local") {
-      return;
-    }
-
     if (!canControlPlayback) {
       console.log("PLAY ignored: playback control not authorized.");
 
       return;
     }
 
-    //playbackActionRef.current = "local";
-
-    const participant = participantRef.current;
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
 
-    if (!participant || !manager || !session) {
-      return;
-    }
-
-    // Only Host controls shared playback.
-    // if (participant.role !== "host") {
-    //   return;
-    // }
-
-    if (!canControlPlayback) {
-      console.log("PLAY ignored: playback control not authorized.");
-
+    if (!manager || !session) {
       return;
     }
 
     const timestamp = getTimestamp();
-    //const timestamp = Date.now();
 
-    /*
-     * Update room state.
-     */
     session.updatePlayback(true, currentTime);
 
-    /*
-     * Broadcast PLAY to all guests.
-     */
     manager.broadcast({
       type: "PLAY",
       payload: {
@@ -956,59 +1195,24 @@ export default function WatchParty() {
       timestamp,
     });
   }
-
   function handleLocalPause(currentTime: number) {
-    // if (playbackActionRef.current === "remote") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    // if (playbackActionRef.current === "sync") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    const action = playbackActionRef.current;
-
-    if (action !== "local") {
-      return;
-    }
-
     if (!canControlPlayback) {
       console.log("PAUSE ignored: playback control not authorized.");
 
       return;
     }
-    const participant = participantRef.current;
 
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
 
-    if (!participant || !manager || !session) {
-      return;
-    }
-
-    // Only Host controls shared playback.
-    // if (participant.role !== "host") {
-    //   return;
-    // }
-    if (!canControlPlayback) {
-      console.log("PAUSE ignored: playback control not authorized.");
-
+    if (!manager || !session) {
       return;
     }
 
     const timestamp = getTimestamp();
-    //const timestamp = Date.now();
 
-    /*
-     * Update room state.
-     */
     session.updatePlayback(false, currentTime);
 
-    /*
-     * Broadcast PAUSE to all guests.
-     */
     manager.broadcast({
       type: "PAUSE",
       payload: {
@@ -1024,55 +1228,28 @@ export default function WatchParty() {
   }
 
   function handleLocalSeek(currentTime: number) {
-    // if (playbackActionRef.current === "remote") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    // if (playbackActionRef.current === "sync") {
-    //   playbackActionRef.current = null;
-    //   return;
-    // }
-
-    const action = playbackActionRef.current;
-
-    if (action !== "local") {
-      return;
-    }
-
     if (!canControlPlayback) {
       console.log("SEEK ignored: playback control not authorized.");
 
       return;
     }
-    const participant = participantRef.current;
+
     const manager = peerManagerRef.current;
     const session = roomSessionRef.current;
 
-    if (!participant || !manager || !session) {
-      return;
-    }
-
-    // Only Host controls shared playback.
-    if (!canControlPlayback) {
-      console.log("SEEK ignored: playback control not authorized.");
-
+    if (!manager || !session) {
       return;
     }
 
     const timestamp = getTimestamp();
-    //const timestamp = Date.now();
 
     /*
-     * Keep the current play/pause state.
+     * Preserve the current play/pause state.
      */
     const playback = session.getPlayback();
 
     session.updatePlayback(playback.isPlaying, currentTime);
 
-    /*
-     * Broadcast SEEK to all guests.
-     */
     manager.broadcast({
       type: "SEEK",
       payload: {
@@ -1086,6 +1263,61 @@ export default function WatchParty() {
       timestamp,
     });
   }
+
+  // const applyPendingPlaybackState = async () => {
+  //   if (role === "host") {
+  //     return;
+  //   }
+
+  //   if (!playbackReadyRef.current) {
+  //     return;
+  //   }
+
+  //   const pending = pendingPlaybackStateRef.current;
+
+  //   if (!pending) {
+  //     return;
+  //   }
+
+  //   pendingPlaybackStateRef.current = null;
+
+  //   const { currentTime, isPlaying } = pending;
+
+  //   console.log("LATE JOIN: applying pending playback state:", {
+  //     currentTime,
+  //     isPlaying,
+  //   });
+
+  //   try {
+  //     videoPlayerRef.current?.setPlaybackRate(1);
+
+  //     if (isPlaying) {
+  //       /*
+  //        * Guest joined while host was playing.
+  //        *
+  //        * Jump directly to the host's latest known position
+  //        * and start playback.
+  //        */
+  //       await videoPlayerRef.current?.playAt(currentTime);
+
+  //       console.log("LATE JOIN: playback started.", currentTime);
+  //     } else {
+  //       /*
+  //        * Host is paused.
+  //        *
+  //        * Guest should remain paused at the same position.
+  //        */
+  //       await videoPlayerRef.current?.seekTo(currentTime);
+
+  //       console.log(
+  //         "LATE JOIN: playback positioned while paused.",
+  //         currentTime,
+  //       );
+  //     }
+  //   } catch (error) {
+  //     console.error("LATE JOIN: failed to apply playback state:", error);
+  //   }
+  // };
 
   return (
     <main className="min-h-screen p-8">
@@ -1101,6 +1333,13 @@ export default function WatchParty() {
             torrentFile={torrentFile}
             canControlPlayback={canControlPlayback}
             autoPlay={false}
+            // onReady={() => {
+            //   console.log("WatchParty: video playback ready.");
+
+            //   playbackReadyRef.current = true;
+
+            //   void applyPendingPlaybackState();
+            // }}
             onPlay={handleLocalPlay}
             onPause={handleLocalPause}
             onSeek={handleLocalSeek}
