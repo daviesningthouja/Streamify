@@ -165,7 +165,7 @@ export default function WatchParty() {
     pendingPlaybackStateRef.current = {
       currentTime: session.playback.currentTime,
       isPlaying: session.playback.isPlaying,
-      updatedAt: Date.now(),
+      updatedAt: session.playback.updatedAt,
     };
 
     console.log(
@@ -1368,7 +1368,11 @@ export default function WatchParty() {
          */
         await videoPlayerRef.current?.playAt(targetTime);
 
-        console.log("LATE JOIN: playback started.", currentTime);
+        console.log("LATE JOIN: playback started.", {
+          originalTime: currentTime,
+          targetTime,
+          elapsedSeconds,
+        });
       } else {
         /*
          * Host is paused.
@@ -1378,10 +1382,11 @@ export default function WatchParty() {
         //await videoPlayerRef.current?.seekTo(currentTime);
         await videoPlayerRef.current?.pauseAt(targetTime);
 
-        console.log(
-          "LATE JOIN: playback positioned while paused.",
-          currentTime,
-        );
+        console.log("LATE JOIN: playback positioned while paused.", {
+          originalTime: currentTime,
+          targetTime,
+          elapsedSeconds,
+        });
       }
     } catch (error) {
       console.error("LATE JOIN: failed to apply playback state:", error);
