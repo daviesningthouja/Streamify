@@ -26,12 +26,13 @@ export default function WatchParty() {
   const hostConnectionRef = useRef<DataConnection | null>(null);
 
   const roomSessionRef = useRef<RoomSession | null>(null);
-  // const playbackReadyRef = useRef(false);
+  const playbackReadyRef = useRef(false);
 
-  // const pendingPlaybackStateRef = useRef<{
-  //   currentTime: number;
-  //   isPlaying: boolean;
-  // } | null>(null);
+  const pendingPlaybackStateRef = useRef<{
+    currentTime: number;
+    isPlaying: boolean;
+    updatedAt: number;
+  } | null>(null);
 
   const participantRef = useRef<Participant | null>(null);
 
@@ -87,8 +88,8 @@ export default function WatchParty() {
 
     setVideoSrc(null);
     setTorrentFile(null);
-    // playbackReadyRef.current = false;
-    // pendingPlaybackStateRef.current = null;
+    playbackReadyRef.current = false;
+    pendingPlaybackStateRef.current = null;
 
     await downloadTorrent(
       magnetURI,
@@ -154,10 +155,23 @@ export default function WatchParty() {
     }
 
     /*
-     * Playback state will be used
-     * in the synchronization phase.
+     * Preserve the authoritative playback snapshot received
+     * from the Host.
+     *
+     * This is the initial playback state for a late joiner.
+     * The periodic SYNC heartbeat will correct any small
+     * difference after playback begins.
      */
-    console.log("Playback state:", session.playback);
+    pendingPlaybackStateRef.current = {
+      currentTime: session.playback.currentTime,
+      isPlaying: session.playback.isPlaying,
+      updatedAt: Date.now(),
+    };
+
+    console.log(
+      "Initial playback state stored:",
+      pendingPlaybackStateRef.current,
+    );
   }
 
   /*
@@ -210,17 +224,43 @@ export default function WatchParty() {
         session.addParticipant(participant);
 
         /*
-         * Send the complete current
-         * room state back to the Guest.
+         * IMPORTANT:
+         *
+         * RoomSession may contain an older playback snapshot.
+         *
+         * For a late joiner we want the ACTUAL current
+         * position of the Host's video.
          */
-        // manager.sendTo(participant.peerId, {
-        //   type: "SESSION_STATE",
-        //   payload: session.getState(),
-        // });
-        console.log("Room state before sending:", session.getState());
+        const video = videoPlayerRef.current;
+
+        if (video) {
+          const currentTime = video.getCurrentTime();
+
+          if (currentTime !== null) {
+            const isPlaying = video.isPlaying();
+
+            session.updatePlayback(isPlaying, currentTime);
+
+            console.log("Late join: refreshed playback state:", {
+              currentTime,
+              isPlaying,
+            });
+          }
+        }
+
+        /*
+         * Now build the session state.
+         *
+         * This state contains the freshly captured
+         * playback position.
+         */
+        const sessionState = session.getState();
+
+        console.log("Room state before sending:", sessionState);
+
         connection.send({
           type: "SESSION_STATE",
-          payload: session.getState(),
+          payload: sessionState,
         });
 
         console.log("SESSION_STATE sent to:", connection.peer);
@@ -346,9 +386,15 @@ export default function WatchParty() {
          *
          * The host does not process its own SYNC messages.
          */
-        if (role === "host") {
+        if (participantRef.current?.role === "host") {
           break;
         }
+        console.log("SYNC HANDLER ENTERED:", {
+          participantRole: participantRef.current?.role,
+          hostTime: incoming.payload.currentTime,
+          hostTimestamp: incoming.payload.timestamp,
+          hostIsPlaying: incoming.payload.isPlaying,
+        });
 
         // --------------------------------------------------
         // 1. Read host playback state
@@ -360,6 +406,35 @@ export default function WatchParty() {
           isPlaying: hostIsPlaying,
         } = incoming.payload;
 
+        const now = Date.now();
+
+        const elapsedSeconds = hostIsPlaying
+          ? Math.max(0, now - hostTimestamp) / 1000
+          : 0;
+
+        const predictedHostTime = hostTime + elapsedSeconds;
+
+        /*
+         * Video is not ready yet.
+         *
+         * Save the latest authoritative host state.
+         * Do not attempt drift correction yet.
+         */
+        if (!playbackReadyRef.current) {
+          pendingPlaybackStateRef.current = {
+            currentTime: hostTime,
+            isPlaying: hostIsPlaying,
+            updatedAt: hostTimestamp,
+          };
+
+          console.log("SYNC: video not ready. Saving pending playback state.", {
+            currentTime: hostTime,
+            isPlaying: hostIsPlaying,
+            updatedAt: hostTimestamp,
+          });
+
+          break;
+        }
         // --------------------------------------------------
         // 2. Read guest playback state
         // --------------------------------------------------
@@ -382,39 +457,27 @@ export default function WatchParty() {
         // 3. Predict current host position
         // --------------------------------------------------
 
-        const now = Date.now();
+        // const now = Date.now();
 
-        /*
-         * If the host is playing, the host has continued
-         * advancing since the SYNC packet was created.
-         *
-         * Example:
-         *
-         * hostTime      = 100.0
-         * packet age    = 0.2 sec
-         *
-         * predictedHostTime = 100.2
-         *
-         * If the host is paused, time must NOT advance.
-         */
-        const elapsedSeconds = hostIsPlaying
-          ? Math.max(0, now - hostTimestamp) / 1000
-          : 0;
+        // /*
+        //  * If the host is playing, the host has continued
+        //  * advancing since the SYNC packet was created.
+        //  *
+        //  * Example:
+        //  *
+        //  * hostTime      = 100.0
+        //  * packet age    = 0.2 sec
+        //  *
+        //  * predictedHostTime = 100.2
+        //  *
+        //  * If the host is paused, time must NOT advance.
+        //  */
+        // const elapsedSeconds = hostIsPlaying
+        //   ? Math.max(0, now - hostTimestamp) / 1000
+        //   : 0;
 
-        const predictedHostTime = hostTime + elapsedSeconds;
-        // if (!playbackReadyRef.current) {
-        //   pendingPlaybackStateRef.current = {
-        //     currentTime: predictedHostTime,
-        //     isPlaying: hostIsPlaying,
-        //   };
+        // const predictedHostTime = hostTime + elapsedSeconds;
 
-        //   console.log("SYNC: video not ready. Saving pending playback state.", {
-        //     currentTime: predictedHostTime,
-        //     isPlaying: hostIsPlaying,
-        //   });
-
-        //   break;
-        // }
         // const playbackInfo = videoPlayerRef.current?.getPlaybackInfo();
 
         // if (!playbackInfo) {
@@ -1264,60 +1327,66 @@ export default function WatchParty() {
     });
   }
 
-  // const applyPendingPlaybackState = async () => {
-  //   if (role === "host") {
-  //     return;
-  //   }
+  const applyPendingPlaybackState = async () => {
+    if (role === "host") {
+      return;
+    }
 
-  //   if (!playbackReadyRef.current) {
-  //     return;
-  //   }
+    if (!playbackReadyRef.current) {
+      return;
+    }
 
-  //   const pending = pendingPlaybackStateRef.current;
+    const pending = pendingPlaybackStateRef.current;
 
-  //   if (!pending) {
-  //     return;
-  //   }
+    if (!pending) {
+      return;
+    }
 
-  //   pendingPlaybackStateRef.current = null;
+    const elapsedSeconds = pending.isPlaying
+      ? Math.max(0, Date.now() - pending.updatedAt) / 1000
+      : 0;
 
-  //   const { currentTime, isPlaying } = pending;
+    const targetTime = pending.currentTime + elapsedSeconds;
+    pendingPlaybackStateRef.current = null;
 
-  //   console.log("LATE JOIN: applying pending playback state:", {
-  //     currentTime,
-  //     isPlaying,
-  //   });
+    const { currentTime, isPlaying } = pending;
 
-  //   try {
-  //     videoPlayerRef.current?.setPlaybackRate(1);
+    console.log("LATE JOIN: applying pending playback state:", {
+      currentTime,
+      isPlaying,
+    });
 
-  //     if (isPlaying) {
-  //       /*
-  //        * Guest joined while host was playing.
-  //        *
-  //        * Jump directly to the host's latest known position
-  //        * and start playback.
-  //        */
-  //       await videoPlayerRef.current?.playAt(currentTime);
+    try {
+      videoPlayerRef.current?.setPlaybackRate(1);
 
-  //       console.log("LATE JOIN: playback started.", currentTime);
-  //     } else {
-  //       /*
-  //        * Host is paused.
-  //        *
-  //        * Guest should remain paused at the same position.
-  //        */
-  //       await videoPlayerRef.current?.seekTo(currentTime);
+      if (isPlaying) {
+        /*
+         * Guest joined while host was playing.
+         *
+         * Jump directly to the host's latest known position
+         * and start playback.
+         */
+        await videoPlayerRef.current?.playAt(targetTime);
 
-  //       console.log(
-  //         "LATE JOIN: playback positioned while paused.",
-  //         currentTime,
-  //       );
-  //     }
-  //   } catch (error) {
-  //     console.error("LATE JOIN: failed to apply playback state:", error);
-  //   }
-  // };
+        console.log("LATE JOIN: playback started.", currentTime);
+      } else {
+        /*
+         * Host is paused.
+         *
+         * Guest should remain paused at the same position.
+         */
+        //await videoPlayerRef.current?.seekTo(currentTime);
+        await videoPlayerRef.current?.pauseAt(targetTime);
+
+        console.log(
+          "LATE JOIN: playback positioned while paused.",
+          currentTime,
+        );
+      }
+    } catch (error) {
+      console.error("LATE JOIN: failed to apply playback state:", error);
+    }
+  };
 
   return (
     <main className="min-h-screen p-8">
@@ -1333,13 +1402,13 @@ export default function WatchParty() {
             torrentFile={torrentFile}
             canControlPlayback={canControlPlayback}
             autoPlay={false}
-            // onReady={() => {
-            //   console.log("WatchParty: video playback ready.");
+            onReady={() => {
+              console.log("WatchParty: video playback ready.");
 
-            //   playbackReadyRef.current = true;
+              playbackReadyRef.current = true;
 
-            //   void applyPendingPlaybackState();
-            // }}
+              void applyPendingPlaybackState();
+            }}
             onPlay={handleLocalPlay}
             onPause={handleLocalPause}
             onSeek={handleLocalSeek}

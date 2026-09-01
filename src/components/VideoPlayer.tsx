@@ -403,6 +403,11 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const videoRef = useRef<HTMLVideoElement | null>(null);
 
     const streamReadyRef = useRef(false);
+    const onReadyRef = useRef(onReady);
+
+    useEffect(() => {
+      onReadyRef.current = onReady;
+    }, [onReady]);
 
     /*
      * These counters represent DOM events that were caused
@@ -482,7 +487,8 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
       console.log("VideoPlayer: video source is playable.");
 
-      onReady?.();
+      // onReady?.();
+      onReadyRef.current?.();
     };
 
     useImperativeHandle(
@@ -836,7 +842,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
        */
       video.removeAttribute("src");
       video.load();
-    }, [src, torrentFile, onReady]);
+    }, [src, torrentFile]);
 
     return (
       <div className="aspect-video w-full overflow-hidden rounded-xl bg-black">
