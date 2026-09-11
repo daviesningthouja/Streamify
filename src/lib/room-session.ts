@@ -134,6 +134,24 @@ export class RoomSession {
     return true;
   }
 
+  removeParticipantByPeerId(
+  peerId: string,
+): boolean {
+  const participant =
+    this.state.participants.find(
+      (participant) =>
+        participant.peerId === peerId,
+    );
+
+  if (!participant) {
+    return false;
+  }
+
+  return this.removeParticipant(
+    participant.participantId,
+  );
+}
+
   getTorrent(): TorrentState | null {
     return this.state.torrent
       ? {

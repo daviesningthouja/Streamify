@@ -3,7 +3,7 @@ import type { Participant, RoomRole } from "@/types/room";
 const PARTICIPANT_ID_KEY = "stream-sync-participant-id";
 
 function getOrCreateParticipantId(): string {
-  const existing = localStorage.getItem(PARTICIPANT_ID_KEY);
+  const existing = sessionStorage.getItem(PARTICIPANT_ID_KEY);
 
   if (existing) {
     return existing;
@@ -11,7 +11,7 @@ function getOrCreateParticipantId(): string {
 
   const participantId = crypto.randomUUID();
 
-  localStorage.setItem(PARTICIPANT_ID_KEY, participantId);
+  sessionStorage.setItem(PARTICIPANT_ID_KEY, participantId);
 
   return participantId;
 }
@@ -27,7 +27,7 @@ export function createParticipant(
     peerId,
     role,
     permissions: {
-       canControlPlayback: role === "host",
+      canControlPlayback: role === "host",
     },
   };
 }

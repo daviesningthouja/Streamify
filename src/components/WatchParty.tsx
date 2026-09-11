@@ -75,7 +75,11 @@ export default function WatchParty() {
    * -----------------------------------------
    */
   async function handleGuestTorrent(magnetURI: string) {
-    console.log("Starting torrent download...");
+    console.log("Starting torrent download...", {
+      magnetURI,
+      roomId: roomSessionRef.current?.getRoomId(),
+      participantId: participantRef.current?.participantId,
+    });
     if (activeMagnetRef.current === magnetURI) {
       console.log("Torrent already being loaded:", magnetURI);
 
@@ -857,7 +861,7 @@ export default function WatchParty() {
         if (currentRole === "host" && !roomSessionRef.current) {
           roomSessionRef.current = new RoomSession(id, participant);
 
-          setRoomId(id);
+          //setRoomId(id);
 
           console.log(
             "Room session created:",
@@ -901,6 +905,44 @@ export default function WatchParty() {
 
       onConnectionClose: (remotePeerId) => {
         console.log("Peer disconnected:", remotePeerId);
+
+        /*
+         * A Host owns the RoomSession.
+         *
+         * Remove the disconnected Guest
+         * from the authoritative room state.
+         */
+        if (participantRef.current?.role === "host") {
+          const session = roomSessionRef.current;
+
+          if (session) {
+            const removed = session.removeParticipantByPeerId(remotePeerId);
+
+            console.log("Participant removed from room:", {
+              peerId: remotePeerId,
+              removed,
+              participants: session.getParticipants(),
+            });
+          }
+        }
+
+        /*
+         * Guest-side Host disconnect.
+         *
+         * If the Host connection closes,
+         * this Guest is no longer connected
+         * to the room.
+         */
+        if (
+          participantRef.current?.role === "guest" &&
+          hostConnectionRef.current?.peer === remotePeerId
+        ) {
+          hostConnectionRef.current = null;
+
+          console.warn(
+            "Host connection closed. Guest is no longer connected to the room.",
+          );
+        }
 
         setConnectionStatus(
           manager.getConnectionCount() > 0 ? "connected" : "disconnected",
@@ -1328,7 +1370,7 @@ export default function WatchParty() {
   }
 
   const applyPendingPlaybackState = async () => {
-    if (role === "host") {
+    if (role !== "guest") {
       return;
     }
 
@@ -1339,6 +1381,7 @@ export default function WatchParty() {
     const pending = pendingPlaybackStateRef.current;
 
     if (!pending) {
+      console.log("LATE JOIN: no pending playback state.");
       return;
     }
 
@@ -1347,49 +1390,63 @@ export default function WatchParty() {
       : 0;
 
     const targetTime = pending.currentTime + elapsedSeconds;
-    pendingPlaybackStateRef.current = null;
-
-    const { currentTime, isPlaying } = pending;
 
     console.log("LATE JOIN: applying pending playback state:", {
-      currentTime,
-      isPlaying,
+      currentTime: pending.currentTime,
+      targetTime,
+      isPlaying: pending.isPlaying,
+      elapsedSeconds,
+      updatedAt: pending.updatedAt,
     });
 
     try {
       videoPlayerRef.current?.setPlaybackRate(1);
 
-      if (isPlaying) {
-        /*
-         * Guest joined while host was playing.
-         *
-         * Jump directly to the host's latest known position
-         * and start playback.
-         */
+      /*
+       * Always position the guest at the authoritative
+       * Host position first.
+       */
+      await videoPlayerRef.current?.seekTo(targetTime);
+
+      console.log("LATE JOIN: seek completed.", {
+        targetTime,
+      });
+
+      /*
+       * Only start playback if the Host was playing.
+       */
+      if (pending.isPlaying) {
         await videoPlayerRef.current?.playAt(targetTime);
 
         console.log("LATE JOIN: playback started.", {
-          originalTime: currentTime,
           targetTime,
-          elapsedSeconds,
         });
       } else {
         /*
          * Host is paused.
          *
-         * Guest should remain paused at the same position.
+         * seekTo() has already positioned the video,
+         * so leave it paused.
          */
-        //await videoPlayerRef.current?.seekTo(currentTime);
-        await videoPlayerRef.current?.pauseAt(targetTime);
-
         console.log("LATE JOIN: playback positioned while paused.", {
-          originalTime: currentTime,
           targetTime,
-          elapsedSeconds,
         });
       }
+
+      /*
+       * IMPORTANT:
+       *
+       * Clear the pending state only after the operation
+       * successfully completed.
+       */
+      pendingPlaybackStateRef.current = null;
     } catch (error) {
       console.error("LATE JOIN: failed to apply playback state:", error);
+
+      /*
+       * Keep the pending state so another SYNC/onReady
+       * attempt can still recover it.
+       */
     }
   };
 
@@ -1411,6 +1468,11 @@ export default function WatchParty() {
               console.log("WatchParty: video playback ready.");
 
               playbackReadyRef.current = true;
+
+              console.log(
+                "WatchParty: pending playback state at ready:",
+                pendingPlaybackStateRef.current,
+              );
 
               void applyPendingPlaybackState();
             }}

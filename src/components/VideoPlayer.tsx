@@ -813,7 +813,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         console.log(
           "VideoPlayer: starting WebTorrent stream...",
         );
-
+        console.log("WebTorrent stream URL:", torrentFile.streamURL);
         torrentFile.streamTo(
           video,
           (error?: Error) => {
